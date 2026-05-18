@@ -69,8 +69,24 @@ from core.mt5_engine import (
 # =============================================================================
 # MT5 CONFIGURATION - Pure MetaTrader 5 Operation
 # =============================================================================
-TARGET_SYMBOLS = ["GOLD.i#", "SILVER.i#", "US30Cash#", "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#", "EURGBP#", "GBPJPY#"]
+TARGET_SYMBOLS = [
+    # ── Precious Metals ──
+    "GOLD.i#", "SILVER.i#", "XAUEUR.i#", "XAUJPY.i#", "GAUUSD.i#",
+    # ── Indices ──
+    "US30Cash#", "US100Cash#", "US500Cash#", "JP225Cash#", "GER40Cash#",
+    # ── Energy ──
+    "OILCash#", "BRENTCash#",
+    # ── Crypto ──
+    "BTCUSD#", "ETHUSD#", "BTCJPY#", "XRPUSD#", "ENJUSD#",
+    # ── Forex Majors ──
+    "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#",
+    # ── Forex Crosses ──
+    "EURGBP#", "GBPJPY#", "EURJPY#", "AUDCAD#", "AUDJPY#", "EURAUD#",
+    "GBPCAD#", "EURNZD#", "EURCHF#", "AUDNZD#", "GBPAUD#", "CHFJPY#",
+    "EURCAD#", "CADJPY#", "NZDCAD#", "NZDJPY#",
+]
 FLEET_SCAN_DELAY = 5
+FLEET_INTER_SYMBOL_DELAY = 1.5  # Throttle between symbol scans to prevent API/VRAM overload
 MAX_OPEN_POSITIONS = 999
 MAX_POSITIONS_PER_SYMBOL = 10  # Hard cap: max open positions allowed per individual symbol
 
@@ -256,9 +272,15 @@ GOLD_TRAIL_CONFIG = {
 STEP_TRAIL_CONFIG = FOREX_TRAIL_CONFIG
 
 def get_trail_config(symbol: str) -> dict:
-    """Select step-trailing config based on asset class."""
+    """Select step-trailing config based on asset class.
+    Metals, Indices, Energy, and Crypto all use the wider GOLD_TRAIL_CONFIG
+    to respect their higher ATR and spread noise."""
     sym = symbol.upper()
-    if any(m in sym for m in ("GOLD", "XAU", "SILVER", "XAG", "US30", "DJ30")):
+    is_metal = any(m in sym for m in ("GOLD", "XAU", "SILVER", "XAG", "GAU"))
+    is_index = any(i in sym for i in ("US30", "US100", "US500", "JP225", "GER40", "DJ30"))
+    is_energy = any(e in sym for e in ("OIL", "BRENT"))
+    is_crypto = any(c in sym for c in ("BTC", "ETH", "XRP", "ENJ"))
+    if is_metal or is_index or is_energy or is_crypto:
         return GOLD_TRAIL_CONFIG
     return FOREX_TRAIL_CONFIG
 
@@ -586,19 +608,29 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
   }
         ]
         
-        # ASSET-CLASS CLAMP: Normalize dollar-risk across Metals/Indices vs Forex
-        # Precious metals and indices have much larger point values than Forex pairs
-        is_wide_asset = any(m in symbol.upper() for m in ("GOLD", "XAU", "SILVER", "XAG", "US30", "DJ30"))
+        # ASSET-CLASS CLAMP: Normalize dollar-risk across asset classes
+        # Each class gets geometry calibrated to its ATR and spread characteristics
+        _sym_upper = symbol.upper()
+        is_metal = any(m in _sym_upper for m in ("GOLD", "XAU", "SILVER", "XAG", "GAU"))
+        is_index = any(i in _sym_upper for i in ("US30", "US100", "US500", "JP225", "GER40", "DJ30"))
+        is_energy = any(e in _sym_upper for e in ("OIL", "BRENT"))
+        is_crypto = any(c in _sym_upper for c in ("BTC", "ETH", "XRP", "ENJ"))
         raw_sl = float(result.get("stop_loss_pct", 1.5))
         raw_tp = float(result.get("take_profit_pct", 4.0))
-        if is_wide_asset:
-            clamped_sl = min(raw_sl, 0.15)   # Wide-asset Max SL: 0.15% (ATR-safe)
-            clamped_tp = min(raw_tp, 0.35)   # Wide-asset Max TP: 0.35%
+        if is_crypto:
+            clamped_sl = min(raw_sl, 0.30)   # Crypto: Extreme Volatility
+            clamped_tp = min(raw_tp, 0.60)
+            _asset_class = "CRYPTO"
+        elif is_metal or is_index or is_energy:
+            clamped_sl = min(raw_sl, 0.15)   # Wide Volatility (Metals/Indices/Energy)
+            clamped_tp = min(raw_tp, 0.35)
+            _asset_class = "WIDE"
         else:
-            clamped_sl = min(raw_sl, 0.15)   # Forex Max SL: 0.15% (~15 pips)
-            clamped_tp = min(raw_tp, 0.30)   # Forex Max TP: 0.30% (~30 pips)
+            clamped_sl = min(raw_sl, 0.15)   # Standard Forex
+            clamped_tp = min(raw_tp, 0.30)
+            _asset_class = "FOREX"
         if raw_sl != clamped_sl or raw_tp != clamped_tp:
-            print(f"[CLAMP] AI SL/TP clamped ({('WIDE' if is_wide_asset else 'FOREX')}): SL {raw_sl}% → {clamped_sl}% | TP {raw_tp}% → {clamped_tp}%")
+            print(f"[CLAMP] AI SL/TP clamped ({_asset_class}): SL {raw_sl}% → {clamped_sl}% | TP {raw_tp}% → {clamped_tp}%")
         
         last_consensus = {
             "direction": action,
@@ -711,7 +743,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 if first_entry > 0:
                     move_distance = abs(first_entry - live_market_price)
                     # Asset-class-specific expected TP distance
-                    _is_wide_chase = any(m in symbol.upper() for m in ("GOLD", "XAU", "SILVER", "XAG", "US30", "DJ30"))
+                    _is_wide_chase = any(m in symbol.upper() for m in ("GOLD", "XAU", "SILVER", "XAG", "GAU", "US30", "US100", "US500", "JP225", "GER40", "DJ30", "OIL", "BRENT", "BTC", "ETH", "XRP", "ENJ"))
                     expected_tp_distance = live_market_price * (clamped_tp / 100)  # Use the actual clamped TP %
                     chase_threshold = expected_tp_distance * 0.40  # 40% of expected TP = exhaustion zone
 
@@ -1841,6 +1873,7 @@ async def market_data_loop():
                         mt5_data = await fetch_live_mt5_data(symbol)
                         if mt5_data:
                             live_market_price = mt5_data.get("last_price", 0)
+                        await asyncio.sleep(FLEET_INTER_SYMBOL_DELAY)  # Throttle shadow scan
                     
                     last_consensus = {
                         "direction": "HOLD",
@@ -1860,7 +1893,7 @@ async def market_data_loop():
                     await asyncio.sleep(30)
                     continue
                 else:
-                    for symbol in TARGET_SYMBOLS:
+                    for _scan_idx, symbol in enumerate(TARGET_SYMBOLS):
                         # 1. Fetch live market data for symbol
                         market_data = await fetch_live_mt5_data(symbol)
                         if market_data is None:
@@ -1909,7 +1942,11 @@ async def market_data_loop():
                         await fetch_real_market_data(symbol=symbol, skip_consensus=False)
                         
                         # 4. API Pacing
-                        await asyncio.sleep(FLEET_SCAN_DELAY)
+                        # Inter-symbol throttle: prevents API 429s and VRAM overflow on 40-symbol fleet
+                        await asyncio.sleep(FLEET_INTER_SYMBOL_DELAY)
+                        # End-of-cycle delay only after the last symbol
+                        if _scan_idx == len(TARGET_SYMBOLS) - 1:
+                            await asyncio.sleep(FLEET_SCAN_DELAY)
             else:
                 print("[FALLBACK] No active keys - broadcasting zeros")
                 last_equity = {"total": 0, "daily_pnl": 0, "daily_change_pct": 0}

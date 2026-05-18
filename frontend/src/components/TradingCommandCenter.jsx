@@ -101,9 +101,28 @@ const AnimatedPrice = ({ value, prefix = "$", className = "" }) => {
 };
 
 const MACRO_ASSETS = [
+  // ── Precious Metals ──
   { id: 'GOLD.i#', symbol: 'OANDA:XAUUSD', label: 'Gold (XAUUSD)' },
   { id: 'SILVER.i#', symbol: 'OANDA:XAGUSD', label: 'Silver (XAGUSD)' },
+  { id: 'XAUEUR.i#', symbol: 'OANDA:XAUEUR', label: 'Gold/EUR (XAUEUR)' },
+  { id: 'XAUJPY.i#', symbol: 'TVC:XAUJPY', label: 'Gold/JPY (XAUJPY)' },
+  { id: 'GAUUSD.i#', symbol: 'OANDA:XAUUSD', label: 'Gold Alt (GAUUSD)' },
+  // ── Indices ──
   { id: 'US30Cash#', symbol: 'FOREXCOM:DJI', label: 'US30 (Dow)' },
+  { id: 'US100Cash#', symbol: 'PEPPERSTONE:NAS100', label: 'US100 (Nasdaq)' },
+  { id: 'US500Cash#', symbol: 'FOREXCOM:SPX500', label: 'US500 (S&P)' },
+  { id: 'JP225Cash#', symbol: 'TVC:NI225', label: 'JP225 (Nikkei)' },
+  { id: 'GER40Cash#', symbol: 'PEPPERSTONE:GER40', label: 'GER40 (DAX)' },
+  // ── Energy ──
+  { id: 'OILCash#', symbol: 'TVC:USOIL', label: 'WTI Oil' },
+  { id: 'BRENTCash#', symbol: 'TVC:UKOIL', label: 'Brent Oil' },
+  // ── Crypto ──
+  { id: 'BTCUSD#', symbol: 'INDEX:BTCUSD', label: 'BTC/USD' },
+  { id: 'ETHUSD#', symbol: 'INDEX:ETHUSD', label: 'ETH/USD' },
+  { id: 'BTCJPY#', symbol: 'BITFINEX:BTCJPY', label: 'BTC/JPY' },
+  { id: 'XRPUSD#', symbol: 'BINANCE:XRPUSDT', label: 'XRP/USD' },
+  { id: 'ENJUSD#', symbol: 'BINANCE:ENJUSDT', label: 'ENJ/USD' },
+  // ── Forex Majors ──
   { id: 'EURUSD#', symbol: 'OANDA:EURUSD', label: 'EUR/USD' },
   { id: 'GBPUSD#', symbol: 'OANDA:GBPUSD', label: 'GBP/USD' },
   { id: 'USDJPY#', symbol: 'OANDA:USDJPY', label: 'USD/JPY' },
@@ -111,55 +130,36 @@ const MACRO_ASSETS = [
   { id: 'USDCAD#', symbol: 'OANDA:USDCAD', label: 'USD/CAD' },
   { id: 'USDCHF#', symbol: 'OANDA:USDCHF', label: 'USD/CHF' },
   { id: 'NZDUSD#', symbol: 'OANDA:NZDUSD', label: 'NZD/USD' },
+  // ── Forex Crosses ──
   { id: 'EURGBP#', symbol: 'OANDA:EURGBP', label: 'EUR/GBP' },
   { id: 'GBPJPY#', symbol: 'OANDA:GBPJPY', label: 'GBP/JPY' },
+  { id: 'EURJPY#', symbol: 'OANDA:EURJPY', label: 'EUR/JPY' },
+  { id: 'AUDCAD#', symbol: 'OANDA:AUDCAD', label: 'AUD/CAD' },
+  { id: 'AUDJPY#', symbol: 'OANDA:AUDJPY', label: 'AUD/JPY' },
+  { id: 'EURAUD#', symbol: 'OANDA:EURAUD', label: 'EUR/AUD' },
+  { id: 'GBPCAD#', symbol: 'OANDA:GBPCAD', label: 'GBP/CAD' },
+  { id: 'EURNZD#', symbol: 'OANDA:EURNZD', label: 'EUR/NZD' },
+  { id: 'EURCHF#', symbol: 'OANDA:EURCHF', label: 'EUR/CHF' },
+  { id: 'AUDNZD#', symbol: 'OANDA:AUDNZD', label: 'AUD/NZD' },
+  { id: 'GBPAUD#', symbol: 'OANDA:GBPAUD', label: 'GBP/AUD' },
+  { id: 'CHFJPY#', symbol: 'OANDA:CHFJPY', label: 'CHF/JPY' },
+  { id: 'EURCAD#', symbol: 'OANDA:EURCAD', label: 'EUR/CAD' },
+  { id: 'CADJPY#', symbol: 'OANDA:CADJPY', label: 'CAD/JPY' },
+  { id: 'NZDCAD#', symbol: 'OANDA:NZDCAD', label: 'NZD/CAD' },
+  { id: 'NZDJPY#', symbol: 'OANDA:NZDJPY', label: 'NZD/JPY' },
 ];
 
-const tvSymbolMap = { 
-  "GOLD.i#": "OANDA:XAUUSD", 
-  "GOLD#": "OANDA:XAUUSD",
-  "XAUUSD#": "OANDA:XAUUSD",
-  "XAUUSD.i#": "OANDA:XAUUSD",
-  "XAUUSD": "OANDA:XAUUSD",
-  "GOLD": "OANDA:XAUUSD",
-  "SILVER.i#": "OANDA:XAGUSD",
-  "SILVER#": "OANDA:XAGUSD",
-  "XAGUSD#": "OANDA:XAGUSD",
-  "XAGUSD.i#": "OANDA:XAGUSD",
-  "XAGUSD": "OANDA:XAGUSD",
-  "SILVER": "OANDA:XAGUSD",
-  "EURUSD#": "OANDA:EURUSD",
-  "EURUSD.i#": "OANDA:EURUSD", 
-  "EURUSD": "OANDA:EURUSD",
-  "GBPUSD#": "OANDA:GBPUSD",
-  "GBPUSD.i#": "OANDA:GBPUSD",
-  "GBPUSD": "OANDA:GBPUSD",
-  "USDJPY#": "OANDA:USDJPY",
-  "USDJPY.i#": "OANDA:USDJPY",
-  "USDJPY": "OANDA:USDJPY",
-  "US30Cash#": "FOREXCOM:DJI",
-  "US30.i#": "FOREXCOM:DJI",
-  "US30#": "FOREXCOM:DJI",
-  "US30": "FOREXCOM:DJI",
-  "AUDUSD#": "OANDA:AUDUSD",
-  "AUDUSD.i#": "OANDA:AUDUSD",
-  "AUDUSD": "OANDA:AUDUSD",
-  "NZDUSD#": "OANDA:NZDUSD",
-  "NZDUSD.i#": "OANDA:NZDUSD",
-  "NZDUSD": "OANDA:NZDUSD",
-  "USDCAD#": "OANDA:USDCAD",
-  "USDCAD.i#": "OANDA:USDCAD",
-  "USDCAD": "OANDA:USDCAD",
-  "EURGBP#": "OANDA:EURGBP",
-  "EURGBP.i#": "OANDA:EURGBP",
-  "EURGBP": "OANDA:EURGBP",
-  "USDCHF#": "OANDA:USDCHF",
-  "USDCHF.i#": "OANDA:USDCHF",
-  "USDCHF": "OANDA:USDCHF",
-  "GBPJPY#": "OANDA:GBPJPY",
-  "GBPJPY.i#": "OANDA:GBPJPY",
-  "GBPJPY": "OANDA:GBPJPY",
-};
+const tvSymbolMap = Object.fromEntries(
+  MACRO_ASSETS.flatMap(a => {
+    const base = a.id.replace(/\.i#$/i, '').replace(/#$/g, '').replace(/\.i$/i, '').toUpperCase();
+    return [
+      [a.id, a.symbol],
+      [base + '#', a.symbol],
+      [base + '.i#', a.symbol],
+      [base, a.symbol],
+    ];
+  })
+);
 
 const normalizeBrokerSymbol = (symbol = '') => {
   const clean = String(symbol).trim().toUpperCase();

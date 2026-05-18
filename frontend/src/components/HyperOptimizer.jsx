@@ -3,9 +3,28 @@ import { Play, Settings, RefreshCw, BarChart2, Activity, ChevronRight, Zap } fro
 import { API_BASE } from '../lib/api';
 
 const MACRO_ASSETS = [
+  // Metals
   { id: 'GOLD.i#', label: 'Gold (XAUUSD)' },
   { id: 'SILVER.i#', label: 'Silver (XAGUSD)' },
+  { id: 'XAUEUR.i#', label: 'Gold/EUR (XAUEUR)' },
+  { id: 'XAUJPY.i#', label: 'Gold/JPY (XAUJPY)' },
+  { id: 'GAUUSD.i#', label: 'Gold Alt (GAUUSD)' },
+  // Indices
   { id: 'US30Cash#', label: 'US30 (Dow)' },
+  { id: 'US100Cash#', label: 'US100 (Nasdaq)' },
+  { id: 'US500Cash#', label: 'US500 (S&P)' },
+  { id: 'JP225Cash#', label: 'JP225 (Nikkei)' },
+  { id: 'GER40Cash#', label: 'GER40 (DAX)' },
+  // Energy
+  { id: 'OILCash#', label: 'WTI Oil' },
+  { id: 'BRENTCash#', label: 'Brent Oil' },
+  // Crypto
+  { id: 'BTCUSD#', label: 'BTC/USD' },
+  { id: 'ETHUSD#', label: 'ETH/USD' },
+  { id: 'BTCJPY#', label: 'BTC/JPY' },
+  { id: 'XRPUSD#', label: 'XRP/USD' },
+  { id: 'ENJUSD#', label: 'ENJ/USD' },
+  // Forex Majors
   { id: 'EURUSD#', label: 'EUR/USD' },
   { id: 'GBPUSD#', label: 'GBP/USD' },
   { id: 'USDJPY#', label: 'USD/JPY' },
@@ -13,8 +32,23 @@ const MACRO_ASSETS = [
   { id: 'USDCAD#', label: 'USD/CAD' },
   { id: 'USDCHF#', label: 'USD/CHF' },
   { id: 'NZDUSD#', label: 'NZD/USD' },
+  // Forex Crosses
   { id: 'EURGBP#', label: 'EUR/GBP' },
   { id: 'GBPJPY#', label: 'GBP/JPY' },
+  { id: 'EURJPY#', label: 'EUR/JPY' },
+  { id: 'AUDCAD#', label: 'AUD/CAD' },
+  { id: 'AUDJPY#', label: 'AUD/JPY' },
+  { id: 'EURAUD#', label: 'EUR/AUD' },
+  { id: 'GBPCAD#', label: 'GBP/CAD' },
+  { id: 'EURNZD#', label: 'EUR/NZD' },
+  { id: 'EURCHF#', label: 'EUR/CHF' },
+  { id: 'AUDNZD#', label: 'AUD/NZD' },
+  { id: 'GBPAUD#', label: 'GBP/AUD' },
+  { id: 'CHFJPY#', label: 'CHF/JPY' },
+  { id: 'EURCAD#', label: 'EUR/CAD' },
+  { id: 'CADJPY#', label: 'CAD/JPY' },
+  { id: 'NZDCAD#', label: 'NZD/CAD' },
+  { id: 'NZDJPY#', label: 'NZD/JPY' },
 ];
 
 const HyperOptimizer = ({ wsConnected, wsMessage }) => {

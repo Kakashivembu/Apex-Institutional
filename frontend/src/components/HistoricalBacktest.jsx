@@ -3,7 +3,23 @@ import { Play, Loader2, TrendingUp, TrendingDown, AlertTriangle, Clock } from 'l
 import { API_BASE } from '../lib/api';
 import BacktestLedger from './BacktestLedger';
 
-const SYMBOLS = ['ALL_FLEET', 'GOLD.i#', 'SILVER.i#', 'US30Cash#', 'EURUSD#', 'GBPUSD#', 'USDJPY#', 'AUDUSD#', 'USDCAD#', 'USDCHF#', 'NZDUSD#', 'EURGBP#', 'GBPJPY#'];
+const SYMBOLS = [
+  'ALL_FLEET',
+  // Metals
+  'GOLD.i#', 'SILVER.i#', 'XAUEUR.i#', 'XAUJPY.i#', 'GAUUSD.i#',
+  // Indices
+  'US30Cash#', 'US100Cash#', 'US500Cash#', 'JP225Cash#', 'GER40Cash#',
+  // Energy
+  'OILCash#', 'BRENTCash#',
+  // Crypto
+  'BTCUSD#', 'ETHUSD#', 'BTCJPY#', 'XRPUSD#', 'ENJUSD#',
+  // Forex Majors
+  'EURUSD#', 'GBPUSD#', 'USDJPY#', 'AUDUSD#', 'USDCAD#', 'USDCHF#', 'NZDUSD#',
+  // Forex Crosses
+  'EURGBP#', 'GBPJPY#', 'EURJPY#', 'AUDCAD#', 'AUDJPY#', 'EURAUD#',
+  'GBPCAD#', 'EURNZD#', 'EURCHF#', 'AUDNZD#', 'GBPAUD#', 'CHFJPY#',
+  'EURCAD#', 'CADJPY#', 'NZDCAD#', 'NZDJPY#',
+];
 const TIMEFRAMES = [
   { value: 'H1', label: 'H1 (1 Hour)', maxDays: 90 },
   { value: 'M5', label: 'M5 (5 Minute)', maxDays: 30 },
