@@ -1,0 +1,40 @@
+{
+  "_meta": {
+    "saved_at": 1777469834.9128358,
+    "saved_at_iso": "2026-04-29T19:07:14",
+    "version": 1
+  },
+  "step_trail_state": {
+    "DeltaIndia:BTCUSD": {
+      "account": "DeltaIndia",
+      "symbol": "BTCUSD",
+      "product_id": 84,
+      "side": "short",
+      "entry_price": 77574.1,
+      "size": 11,
+      "highest_price": 77151.65775822,
+      "lowest_price": 76556.7083785,
+      "peak_price": 76556.7083785,
+      "leverage": 10,
+      "current_tier": 2,
+      "current_active_sl": 76917.0,
+      "current_tp": 74091.5,
+      "sl_order_id": null,
+      "last_api_update": 0
+    }
+  },
+  "ai_predictive_traps": {
+    "DeltaIndia:BTCUSD": {
+      "predicted_trigger_price": 75150.0,
+      "protective_sl_price": 76725.5,
+      "reasoning": "Given the strong ask wall and heavily skewed order book toward sellers, the predicted trigger price is set just above the target TP to catch potential front-running reversals. The protective stop loss is set above the trigger price but below the current stop loss and entry price to lock in maximum profit if the target is reached before reversing.",
+      "side": "short",
+      "symbol": "BTCUSD",
+      "set_at": 1777468754.66348,
+      "set_price": 77179.9838951,
+      "account": "DeltaIndia",
+      "executed": false,
+      "_restored_logged": true
+    }
+  }
+}

@@ -1,0 +1,268 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Onest:wght@400;500;700;800;900&display=swap');
+
+@theme {
+  --color-slate-950: #000000;
+  --color-slate-900: #0a0a0a;
+  --color-slate-800: #141414;
+  --color-slate-700: #1f1f1f;
+  --color-slate-600: #333333;
+  --color-slate-500: #555555;
+  --color-slate-400: #888888;
+  --color-slate-300: #aaaaaa;
+  --color-slate-200: #cccccc;
+  --color-slate-100: #f1f9f4;
+  
+  --color-pink-400: #ff3388;
+  --color-pink-500: #f70670;
+  --color-pink-600: #d6005c;
+  
+  --color-cyan-400: #00d4e8;
+  --color-cyan-500: #00b4d8;
+  --color-cyan-600: #0096c7;
+  --color-cyan-700: #0369a1;
+  
+  --color-emerald-400: #2ecda7;
+  --color-emerald-500: #1dd1a1;
+  --color-emerald-600: #10b981;
+  
+  --color-rose-400: #ff4757;
+  --color-rose-500: #ff3838;
+  --color-rose-600: #ef4444;
+  
+  --color-purple-400: #a855f7;
+  --color-purple-500: #8b5cf6;
+  --color-purple-600: #7c3aed;
+
+  --color-amber-400: #fbbf24;
+  --color-amber-500: #f59e0b;
+  
+  --font-sans: 'Manrope', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Onest', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+html {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background-color: var(--color-slate-950);
+  color: var(--color-slate-100);
+}
+
+h1, h2, h3, h4, h5, h6, .font-heading {
+  font-family: var(--font-heading);
+}
+
+/* ============ SCROLLBAR ============ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(247, 6, 112, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(247, 6, 112, 0.3);
+}
+
+::selection {
+  background: rgba(247, 6, 112, 0.3);
+  color: white;
+}
+
+/* ============ ANIMATIONS ============ */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInLeft {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(247, 6, 112, 0.1); }
+  50% { box-shadow: 0 0 20px rgba(247, 6, 112, 0.25); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.9); opacity: 1; }
+  100% { transform: scale(1.3); opacity: 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes scroll-log {
+  from { transform: translateY(0); }
+  to { transform: translateY(-100%); }
+}
+
+/* ============ UTILITY CLASSES ============ */
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out both;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.5s ease-out both;
+}
+
+.animate-slide-left {
+  animation: slideInLeft 0.3s ease-out both;
+}
+
+.animate-glow {
+  animation: glow 3s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgba(247, 6, 112, 0.08) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s linear infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 3s linear infinite;
+}
+
+/* Staggered children */
+.stagger-children > *:nth-child(1) { animation-delay: 0.05s; }
+.stagger-children > *:nth-child(2) { animation-delay: 0.1s; }
+.stagger-children > *:nth-child(3) { animation-delay: 0.15s; }
+.stagger-children > *:nth-child(4) { animation-delay: 0.2s; }
+.stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
+.stagger-children > *:nth-child(6) { animation-delay: 0.3s; }
+
+/* ============ GLASS CARD ============ */
+.glass-card {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 24px;
+  box-shadow: inset 0 0 30px rgba(247, 6, 112, 0.05);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.glass-card:hover {
+  border-color: rgba(247, 6, 112, 0.3);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 0 30px rgba(247, 6, 112, 0.15);
+}
+
+.glass-card-static {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 24px;
+  box-shadow: inset 0 0 30px rgba(247, 6, 112, 0.05);
+}
+
+/* ============ TERMINAL ============ */
+.terminal-line {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  padding: 1px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.terminal-line:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ============ GAUGE ============ */
+.gauge-ring {
+  transition: stroke-dashoffset 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ============ NAV ITEM ============ */
+.nav-item {
+  position: relative;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  min-width: 0;
+}
+
+.nav-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%) scaleY(0);
+  width: 3px;
+  height: 60%;
+  border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #f70670, #ff3388);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.nav-item.active::before {
+  transform: translateY(-50%) scaleY(1);
+}
+
+.mobile-tabbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.mobile-tabbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ============ PAGE TRANSITION ============ */
+.page-enter {
+  animation: fadeIn 0.35s ease-out both;
+}
+
+/* ============ STAT CARD ============ */
+.stat-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.stat-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(247, 6, 112, 0.4), transparent);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.stat-card:hover::after {
+  opacity: 1;
+}

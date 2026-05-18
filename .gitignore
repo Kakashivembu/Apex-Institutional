@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+nvidia_apex_trader/venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+apex_keys.db
+.openclaw/
+
+# Build artifacts
+frontend/dist/
+RuFloUI/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Junk/temp files
+*.log
+query
+full_report.txt
+project_analysis.txt
+
+# Agent / AI tooling
+.gemini/
+.agent/
+
+# Large generated reports (keep .md versions)
+FinalReport.html
+FinalReport.pdf
+FinalReport_V3.ppt

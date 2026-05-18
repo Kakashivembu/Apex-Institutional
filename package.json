@@ -1,0 +1,8 @@
+{
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2"
+  },
+  "dependencies": {
+    "opencode-windows-x64": "^1.14.19"
+  }
+}

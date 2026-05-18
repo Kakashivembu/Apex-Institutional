@@ -1,0 +1,30 @@
+/* Apex Institutional — App-specific overrides */
+
+/* Smooth transitions for all interactive elements */
+* {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* TradingView chart container fix */
+.tradingview-widget-container {
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+/* Table hover rows */
+table tbody tr {
+  transition: background-color 0.15s ease;
+}
+
+/* Remove default focus outlines, use custom */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid rgba(0, 212, 170, 0.4);
+  outline-offset: 2px;
+}
+
+/* Prevent layout shifts */
+img, svg {
+  display: block;
+}

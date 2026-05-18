@@ -1,0 +1,119 @@
+APEX INSTITUTIONAL - 3 AI AGENT TEST LOG
+Generated from a fresh PM2 restart and post-restart live backend log capture.
+
+Environment
+- Process checked: Apex-Backend
+- PM2 status after restart: online
+- Supporting processes online: Apex-Frontend, OpenClaw-Gateway
+- Backend PID after restart: 16816
+
+Test method
+1. Restarted `Apex-Backend` in PM2 to load latest code.
+2. Waited for a fresh 120s consensus cycle.
+3. Captured recent PM2 logs from both `Apex-Backend-out.log` and `Apex-Backend-error.log`.
+4. Verified live 3-agent pipeline output and consensus score behavior.
+
+Fresh live-cycle verification
+1. Consensus cycle started successfully.
+   Log:
+   [SYSTEM] Initiating new 120s Consensus Cycle...
+
+2. CLAW agent responded successfully.
+   Logs:
+   [STEP 1/3] Running CLAW Fundamental Analysis (BlockRun)...
+   [CLAW] Fetching live liquidity data from Binance Futures...
+   [CLAW] BlockRun response status: 200
+   [CLAW] Sentiment: BEARISH (65%) | Squeeze: MEDIUM | Side: SHORT
+
+3. NVIDIA Macro agent responded successfully.
+   Logs:
+   [STEP 2/3] Running Macro Trend Analysis (NVIDIA NIM)...
+   [MACRO TREND] SELL (82%) | Vol: medium | Lev: 30x
+   Alternate fresh cycle also observed:
+   [MACRO TREND] SELL (82%) | Vol: low | Lev: 30x
+
+4. NVIDIA Scalper agent responded successfully.
+   Logs:
+   [STEP 3/3] Running Scalper Analysis (NVIDIA NIM)...
+   [SCALPER] SELL @ 76007.0 (82%) | SL: 1.2% | TP: 2.0% | Lev: 30x
+   Alternate fresh cycle also observed:
+   [SCALPER] SELL @ 76000.0 (82%) | SL: 1.2% | TP: 2.0% | Lev: 30x
+
+5. Final consensus was produced successfully.
+   Logs:
+   [CONSENSUS] Computing final 3-Agent decision...
+   [RISK CONTROL] AI Confidence: 82% (Macro: 82% / Scalper: 82%). AI dynamically selected 30x Leverage.
+   [RISK] AI Params: SL=1.0% | TP=2.4% | Leverage=30x | Volatility=low
+   FINAL DECISION: SHORT
+
+6. Consensus strength now reflects all 3 agents.
+   Fresh logs:
+   TRADE EXECUTION TRIGGERED: SHORT (Consensus: 100%)
+
+7. Fleet execution gate is working.
+   Logs:
+   [FLEET] Executing SHORT on 2 accounts simultaneously...
+   [TRADE:DeltaIndia] Skipping: Active BTC position already exists
+   [TRADE:INDIA_TESTNET2] Skipping: Active BTC position already exists
+
+Agent status verdict
+- CLAW: WORKING
+- NVIDIA Macro: WORKING
+- NVIDIA Scalper: WORKING
+- Final decision pipeline: WORKING
+- Consensus normalization fix: WORKING
+
+Confidence and consensus verification
+Finding 1: Macro and Scalper confidence values are correct.
+- Macro confidence from fresh log: 82
+- Scalper confidence from fresh log: 82
+- Reported AI Confidence: 82
+- This matches the current brain.py logic:
+  avg_confidence = (macro_conf + scalper_conf) / 2
+
+Finding 2: Consensus strength is now correct for unanimous 3-agent alignment.
+- Fresh live logs now show:
+  CLAW = BEARISH
+  Macro = SELL
+  Scalper = SELL
+  TRADE EXECUTION TRIGGERED: SHORT (Consensus: 100%)
+
+Conclusion on scoring
+- AI confidence: CORRECT
+- Final direction: CORRECT
+- Consensus strength: CORRECT after the CLAW vote normalization fix
+
+Additional runtime findings
+1. Velocity shield task started successfully.
+   Log:
+   [VELOCITY SHIELD] Fast reversal monitor started
+
+2. Predictive trap loop started successfully.
+   Log:
+   [AI-TRAP] Predictive Trap Loop started (10-minute cycle)
+
+3. Old PM2 error history still contains previous startup syntax failures.
+   Historical error log lines observed:
+   SyntaxError: expected 'except' or 'finally' block
+   These are from older failed restarts and do not reflect the current running process.
+
+4. Old trailing-loop `bracket_info` runtime errors are still present in historical PM2 log history.
+   Historical lines observed in old log tail:
+   [STEP-TRAIL:DeltaIndia] Error: cannot access local variable 'bracket_info' where it is not associated with a value
+   [STEP-TRAIL:INDIA_TESTNET2] Error: cannot access local variable 'bracket_info' where it is not associated with a value
+
+Important note on the bracket_info bug check
+- The fresh post-restart live cycle captured here clearly shows the 3-agent pipeline and 100% consensus fix working.
+- The PM2 tail also contains older historical trailing errors mixed into the same log window.
+- This capture alone does not prove the bracket_info bug is fully extinct across a longer fresh runtime window.
+- It does prove the backend restarted successfully and the new consensus fix is active.
+
+Final conclusion
+- Fresh 3-agent test after restart: PASS
+- All 3 agents responded in live runtime.
+- Consensus strength now reaches 100% for unanimous alignment.
+- AI confidence reporting remains correct.
+- The backend is currently online and executing the latest code.
+
+Recommended next check
+- Run a longer fresh log capture focused only on new post-restart trailing events to conclusively verify whether any new `bracket_info` errors still occur in the active runtime.

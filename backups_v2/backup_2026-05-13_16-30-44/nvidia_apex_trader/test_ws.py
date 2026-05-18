@@ -1,0 +1,11 @@
+import websocket, json
+ws = websocket.create_connection("ws://localhost:8000/")
+ws.send(json.dumps({"type": "get_state"}))
+d = json.loads(ws.recv())
+c = d.get("data", {}).get("consensus", {})
+print(f"Direction: {c.get('direction')}")
+print(f"Strength:  {c.get('strength')}")
+print(f"Reasoning: {c.get('reasoning', 'N/A')[:80]}")
+print(f"Leverage:  {c.get('leverage')}")
+print(f"Volatility: {c.get('volatility')}")
+ws.close()

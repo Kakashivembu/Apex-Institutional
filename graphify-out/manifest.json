@@ -1,0 +1,638 @@
+{
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\ecosystem.config.js": {
+    "mtime": 1778086681.781063,
+    "hash": "6b10b573dd4c38e5b8eba397059d4e73"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\test_agent_vision.py": {
+    "mtime": 1776710833.568171,
+    "hash": "18c16b784c98d04832cae2e0639ee34e"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\test_cli.py": {
+    "mtime": 1775838356.586913,
+    "hash": "e66722b659cf3888a270bba65b1e50a7"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\test_exchange.py": {
+    "mtime": 1775848420.6110444,
+    "hash": "75c0d3875b046ac9eab8ff76d205146f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\test_nvidia.py": {
+    "mtime": 1775848154.1066806,
+    "hash": "7f222bafaa15d39b400bd8b3763d7649"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\test_openrouter.py": {
+    "mtime": 1775848030.3838496,
+    "hash": "6beed7e001c78e164f08af8fd3de5f61"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\test_smart_money.py": {
+    "mtime": 1776718975.5326762,
+    "hash": "61dc50ffd4ff341d58065acf94f333f5"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\CLAWTRADINGBOT\\cron_engine.py": {
+    "mtime": 1775280656.3933547,
+    "hash": "14a693e67c9ba93f6b9dd6ef86e7947e"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\CLAWTRADINGBOT\\setup_crons.ps1": {
+    "mtime": 1775234820.1616921,
+    "hash": "6f3526edb4f34c1e2fc24aaae8594ee7"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\eslint.config.js": {
+    "mtime": 1775740251.7829745,
+    "hash": "49c8473bcfcec3aef596a5fb04a6df06"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\postcss.config.js": {
+    "mtime": 1775750407.4256725,
+    "hash": "43a01ffb8d47a5272eb61d7b64d17382"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\vite.config.js": {
+    "mtime": 1777972005.9318845,
+    "hash": "864e4dad0ab60f4dae82004a5c37e25a"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\App.jsx": {
+    "mtime": 1778321086.508791,
+    "hash": "64bfb9cb12a34511cd4648d0dbbd8dfb"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\main.jsx": {
+    "mtime": 1775740251.82924,
+    "hash": "e13723e2574429d9a6d849727e3ff695"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\TestComponent.jsx": {
+    "mtime": 1775747059.5970483,
+    "hash": "0d03775a356c5a33c2272bb49861fa32"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\ApiFleetManager.jsx": {
+    "mtime": 1778166015.7287347,
+    "hash": "fa89e2b9e7975f7798a6d7b82f6b41ad"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\BacktestEngine.jsx": {
+    "mtime": 1778314383.1137376,
+    "hash": "8aabb570df59303338a1ec7932f21a7f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\BacktestLedger.jsx": {
+    "mtime": 1778235797.0988479,
+    "hash": "ee1d67c1f2956bfd35d4067bdea07cba"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\BotPerformance.jsx": {
+    "mtime": 1778230779.199738,
+    "hash": "6d548127b556140f169967c0a6418eb5"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\ChatBox.jsx": {
+    "mtime": 1777969264.0602639,
+    "hash": "d9c7ce72d1f0026a190b348e4b79ac51"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\ClawFundamentalDesk.jsx": {
+    "mtime": 1777969264.0622644,
+    "hash": "73c9ae5402046b0acb9e786a603f6f82"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\FluidBackground.jsx": {
+    "mtime": 1778320905.9147713,
+    "hash": "b59b8ec712b5da0c1157170b988623e2"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\HistoricalBacktest.jsx": {
+    "mtime": 1778344304.9066224,
+    "hash": "71d5c3080ae1d4bf3f353d58de96056e"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\HyperOptimizer.jsx": {
+    "mtime": 1778333494.33724,
+    "hash": "57602bf888d46066109fb7e17db33abf"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\LiveTerminal.jsx": {
+    "mtime": 1777359219.363103,
+    "hash": "254d2346daccbe008e664bf6d698cebd"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\Sidebar.jsx": {
+    "mtime": 1776545414.8876843,
+    "hash": "19231fdf68522cc673bbda8c6775a1c0"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\SystemParameters.jsx": {
+    "mtime": 1776545414.8904674,
+    "hash": "cd140b729504104e1a8cc802529c295f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\TopBar.jsx": {
+    "mtime": 1776545414.9037719,
+    "hash": "9a424924be6cea75d7f6b5bd89fdb5cf"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\components\\TradingCommandCenter.jsx": {
+    "mtime": 1778317984.0006888,
+    "hash": "16ef588a239b23a3e187538638dddd43"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\lib\\api.js": {
+    "mtime": 1777969264.057264,
+    "hash": "21ca06e52f5540929930f63f9292f59a"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\landing-page\\next.config.js": {
+    "mtime": 1778309057.9752402,
+    "hash": "9959545a51a9e0c2e57362748588630f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\landing-page\\postcss.config.js": {
+    "mtime": 1778309058.111394,
+    "hash": "b46edce5c4fbda3c64745a89d92aa2d6"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\landing-page\\tailwind.config.js": {
+    "mtime": 1778309270.1316724,
+    "hash": "0b1ea0cc3bfc1fe15d03752e28cd1d39"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\landing-page\\src\\app\\layout.tsx": {
+    "mtime": 1778310312.5832365,
+    "hash": "ea7a9a7f26de408fe764ea0f2d48aa55"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\landing-page\\src\\lib\\utils.ts": {
+    "mtime": 1778310312.6485722,
+    "hash": "9d5b0c248b6fba79d563fe3c1b7d9c41"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\apex.config.js": {
+    "mtime": 1775242471.9979131,
+    "hash": "5b18daee10dfd9949e201878f799a1aa"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\key_manager.py": {
+    "mtime": 1778230731.2068524,
+    "hash": "a7e82a95e06b9be82252cc7bf37baba1"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\main.py": {
+    "mtime": 1776533837.992086,
+    "hash": "7459cec3a2b3ed012a52ce956f1450a5"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\modify_brain.py": {
+    "mtime": 1778133931.894896,
+    "hash": "55c9307c5460c3893738426e39dc53ef"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\purge_delta.py": {
+    "mtime": 1778134720.5095718,
+    "hash": "273ee9e266eaa256ad72db53bbc02491"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\server.py": {
+    "mtime": 1778344263.2799942,
+    "hash": "423ce720df3e387d7d5cdd2c7d004de4"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\test_agents.py": {
+    "mtime": 1777304896.514621,
+    "hash": "9fd9a6d11fe1ee4a83ec7a992ed03382"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\test_flight_recorder.py": {
+    "mtime": 1776630384.4203022,
+    "hash": "e0640183cb631de0f70542b98fb21937"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\test_nim.py": {
+    "mtime": 1776971569.8584363,
+    "hash": "060c05b806dd1c07069039ef7580c076"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\test_sl_api.py": {
+    "mtime": 1776537812.6057415,
+    "hash": "c7b36d73b10946753e9b167d615e7ef3"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\test_step_trail.py": {
+    "mtime": 1776536181.5712187,
+    "hash": "14258bd565f5b5650079778dbc21a2e3"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\test_ws.py": {
+    "mtime": 1776662766.2467265,
+    "hash": "6650686b5b4994de0eaa1376918ee40d"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\test_ws_state.py": {
+    "mtime": 1777362213.1767325,
+    "hash": "5744ec29012ae04d1074098ff07cde8f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\websocket_server.py": {
+    "mtime": 1775759940.492831,
+    "hash": "86b7c2332efdec7d4ef77dbe92275eb5"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\backtester.py": {
+    "mtime": 1778344124.843626,
+    "hash": "4ca04b0d62f3c66196a0397a35226f0f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\backtest_agent.py": {
+    "mtime": 1776976271.193978,
+    "hash": "57d5c81337d31c0f13ddf5cbc0c743c6"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\brain.py": {
+    "mtime": 1778332340.607368,
+    "hash": "62fb5aeceee37b3020d216cd1519c17e"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\data.py": {
+    "mtime": 1778337929.1920142,
+    "hash": "c2fa707dddfd8b6a7bf9170e6f7037ba"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\env_manager.py": {
+    "mtime": 1778121371.5917118,
+    "hash": "a9940871d3801ca6c5d77859b1203a25"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\exchange.py": {
+    "mtime": 1778216334.805717,
+    "hash": "416eaf51d05aeb8dd540e834207b3f11"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\flight_recorder.py": {
+    "mtime": 1778230881.2582314,
+    "hash": "4c1909d8beed86122e5a357cbb3e0338"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\macro_sensors.py": {
+    "mtime": 1778318865.7355525,
+    "hash": "c07b7d75924a528a34caaabeb096b3fe"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\memory.py": {
+    "mtime": 1775246162.512687,
+    "hash": "f4ec08f0b8ac2c3f2bc880c1d509a197"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\mt5_engine.py": {
+    "mtime": 1778333145.91461,
+    "hash": "4356336cb63e2e80047c614231a29028"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\news_shield.py": {
+    "mtime": 1778312630.592896,
+    "hash": "8092def04f3b5212ad0b9e3626492d64"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\optimizer.py": {
+    "mtime": 1778333663.7954333,
+    "hash": "9f757d9edc77251255e14aac0dcb6e43"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\risk_manager.py": {
+    "mtime": 1778218614.7081435,
+    "hash": "09f83d3427aaba2c10721fdc1ccea01c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\core\\__init__.py": {
+    "mtime": 1775894223.4438872,
+    "hash": "569174e2ad9439111f5aa2c2e9b84803"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\vite.config.ts": {
+    "mtime": 1778308455.0331805,
+    "hash": "a4a8e290d7c533eb8360747052e11e57"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\vitest.config.ts": {
+    "mtime": 1778308455.034819,
+    "hash": "9fffee7a7af5ae9002716277d67811c6"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\backend\\jsonl-monitor.ts": {
+    "mtime": 1778308454.9867566,
+    "hash": "1e814d6e2ba10c3b805df67037d16499"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\backend\\server.ts": {
+    "mtime": 1778308454.9877577,
+    "hash": "3caf3d338a003d84d711c945f91d173f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\backend\\telegram-bot.ts": {
+    "mtime": 1778308454.9877577,
+    "hash": "4575a79c11b9489657d9eab120756af8"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\backend\\webhook-github.ts": {
+    "mtime": 1778308454.9877577,
+    "hash": "42d0def55d63359826da4d3943653a99"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\backend\\webhook-gitlab.ts": {
+    "mtime": 1778308454.9887578,
+    "hash": "8f4613c1d43ce07200bfe52a579351f1"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\backend\\__tests__\\webhook-github.test.ts": {
+    "mtime": 1778308454.9737034,
+    "hash": "debe2d498d01f447f6d915bb65b86bdf"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\backend\\__tests__\\webhook-gitlab.test.ts": {
+    "mtime": 1778308454.9737034,
+    "hash": "ac8fcb202c5282f3a236d06643eb7d84"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\api.ts": {
+    "mtime": 1778308454.9887578,
+    "hash": "d8733e2eaebf9509ee3e726856585f71"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\App.tsx": {
+    "mtime": 1778308454.9887578,
+    "hash": "761b8e89c96b0de58b3577cfbae6a8ac"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\main.tsx": {
+    "mtime": 1778308455.0012958,
+    "hash": "93e8462363bf0132b72455ea55f191f3"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\store.ts": {
+    "mtime": 1778308455.0311804,
+    "hash": "43cba59402b9e949d3ca9fdec4f14ffe"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\test-setup.ts": {
+    "mtime": 1778308455.0311804,
+    "hash": "dc972af1d2b80e79814a7e1999178b15"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\types.ts": {
+    "mtime": 1778308455.0331805,
+    "hash": "da70ff92399195ce2da6a85fde0ec455"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\components\\ErrorBoundary.tsx": {
+    "mtime": 1778308454.9902494,
+    "hash": "cdd3517c6fa7c6277385be1da1a58e3b"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\components\\Layout.tsx": {
+    "mtime": 1778308454.9902494,
+    "hash": "ca3580fcc2f64359529a0b473eabbcf1"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\components\\ui\\Button.tsx": {
+    "mtime": 1778308454.999293,
+    "hash": "c7adcdd12cec2bb66efdb327ccbfe6a4"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\components\\ui\\Card.tsx": {
+    "mtime": 1778308454.999293,
+    "hash": "f3d45b5ff38f6e715345251a3412dec3"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\components\\ui\\StatusBadge.tsx": {
+    "mtime": 1778308455.0012958,
+    "hash": "aec9e8b8addc38666a78fcf2b662d8ef"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\AgentsPanel.tsx": {
+    "mtime": 1778308455.0073545,
+    "hash": "1447bc43abda26846a634ffa4d3d614a"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\AgentVizPanel.tsx": {
+    "mtime": 1778308455.0063543,
+    "hash": "b7c563e8c42734742cac6074987e830c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\ConfigPanel.tsx": {
+    "mtime": 1778308455.0078583,
+    "hash": "f172b2eeb1d902ca9de18b77e40cd6f0"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\Dashboard.tsx": {
+    "mtime": 1778308455.0113938,
+    "hash": "20715058af9757c0060bf45ecaf3bbc1"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\HiveMindPanel.tsx": {
+    "mtime": 1778308455.0126536,
+    "hash": "d72edff8353898f6ceead68d65423a3a"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\HooksPanel.tsx": {
+    "mtime": 1778308455.0216727,
+    "hash": "4c7ed5246324a0663430fdedce3d4807"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\LogsPanel.tsx": {
+    "mtime": 1778308455.024673,
+    "hash": "70c78d3bb6e0c6197b0fcfa0bd7b6b65"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\MemoryPanel.tsx": {
+    "mtime": 1778308455.0281768,
+    "hash": "5b4ff91b3df161c9dc5ab522d6218c3c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\NeuralPanel.tsx": {
+    "mtime": 1778308455.0281768,
+    "hash": "eb6a961d47d13640f6520e78d04e73c3"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\PerformancePanel.tsx": {
+    "mtime": 1778308455.0281768,
+    "hash": "9a0a1b11d508d42bccc21d0df334c8fa"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\SessionsPanel.tsx": {
+    "mtime": 1778308455.0291803,
+    "hash": "a1c8857e3fd0209346fa54e93656e18f"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\SetupWizard.tsx": {
+    "mtime": 1778308455.0291803,
+    "hash": "3378794a7a2e0782c5ef6d70d79ddc20"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\SwarmMonitorPanel.tsx": {
+    "mtime": 1778308455.0291803,
+    "hash": "53a67c20171fcd7fdc1e14b1ca407186"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\SwarmPanel.tsx": {
+    "mtime": 1778308455.0301807,
+    "hash": "13679d8f78a15ba06065b6fee02f1c43"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\TasksPanel.tsx": {
+    "mtime": 1778308455.0301807,
+    "hash": "de895cd81f8bbc8583f9b9c73870b6c3"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\WebhooksPanel.tsx": {
+    "mtime": 1778308455.0301807,
+    "hash": "aaa315f46e641328e23e6d171474f599"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\pages\\WorkflowsPanel.tsx": {
+    "mtime": 1778308455.0311804,
+    "hash": "e096d5c21d5138908de2a7a661779c35"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\tour\\TourContext.tsx": {
+    "mtime": 1778308455.0321803,
+    "hash": "e3e0692df1194c41f39c9953f3ff264c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\tour\\tourSteps.ts": {
+    "mtime": 1778308455.0321803,
+    "hash": "2fda86b412907ca211aa81aebd66cc33"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\utils\\formatTime.test.ts": {
+    "mtime": 1778308455.0331805,
+    "hash": "1a52dc9d98d3ecee3c488b18e39393b4"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\src\\frontend\\utils\\formatTime.ts": {
+    "mtime": 1778308455.0331805,
+    "hash": "a5c0e5f8acbccefdfa8136042ca5f3e6"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\3ai agent test log.txt": {
+    "mtime": 1776777166.2943156,
+    "hash": "edf07ca84b0c4eed21978b27a7638ce5"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\AGENTS.md": {
+    "mtime": 1775854637.43932,
+    "hash": "2dad5ea3d2834b5c598b2be27e12d54d"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\APEX_MEMORY.md": {
+    "mtime": 1778171327.413746,
+    "hash": "428763aeed7e868bc03cd3a04f72f9a2"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\FinalReport.html": {
+    "mtime": 1776632397.07475,
+    "hash": "bf735cab668e9b0da9ff6aa4b34de02e"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\full_report.txt": {
+    "mtime": 1775733723.1596434,
+    "hash": "1a4103e9449d2f4a0a3f888140e32a92"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\implementation_plan.md": {
+    "mtime": 1776551497.1640978,
+    "hash": "be3a76b294778c97f07aaff05f149583"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\NVidia NIM Log.txt": {
+    "mtime": 1776971187.7341092,
+    "hash": "d88d0b577e9b4853406c51d5db9fda26"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\PROJECT_ANALYSIS.md": {
+    "mtime": 1775891501.5775373,
+    "hash": "68826670cb304f4eb3f8a5bbf410c1e9"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\project_analysis.txt": {
+    "mtime": 1775733551.5654263,
+    "hash": "c6df3f728e0b649da34c982f52fac383"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\UPDATE_REPORT_2026-04-16.txt": {
+    "mtime": 1776360389.8747363,
+    "hash": "eb09ca81b437027fe37013bc43ad5c73"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\CLAWTRADINGBOT\\prompt.txt": {
+    "mtime": 1775410838.968749,
+    "hash": "7a13b70855859705b4da71bf6d8a245c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\CLAWTRADINGBOT\\README.md": {
+    "mtime": 1775238750.2464643,
+    "hash": "b338824c5e3fb5965b301adfd28a64d1"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\index.html": {
+    "mtime": 1775741092.4518514,
+    "hash": "c36c21a51cc028a91ba8953dcd79002d"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\README.md": {
+    "mtime": 1775740251.8337526,
+    "hash": "a28dc4cb878325f3e9e5649f3e1469ac"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\agent_health_check.md": {
+    "mtime": 1777304950.2309043,
+    "hash": "447c1cef39450c5f5d01b5bf3bf44653"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\agent_momentum_alignment.md": {
+    "mtime": 1777309292.6547713,
+    "hash": "73717f89e8f0aab92cbfdf62ec2114fa"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\APEX_MEMORY.md": {
+    "mtime": 1778179185.543955,
+    "hash": "428763aeed7e868bc03cd3a04f72f9a2"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\APEX_STRATEGY.md": {
+    "mtime": 1777040648.2750795,
+    "hash": "e7f1c496192196a40cd691689e1a5c48"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\api_fleet_analysis.md": {
+    "mtime": 1777314328.6566064,
+    "hash": "8c75ed4304da5b27491b47e9af94838b"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\api_fleet_fix.md": {
+    "mtime": 1777314364.8087034,
+    "hash": "e616463a6fdd81bcba4ef11a98790673"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\claw_prompt_update.md": {
+    "mtime": 1777305826.153226,
+    "hash": "9e85f86f2eaa693d66bc3110d7535cd1"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\cross_device_fix.md": {
+    "mtime": 1777313830.5625808,
+    "hash": "b7280bc2dfbdc71b75df2de07197c532"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\cross_network_fix.md": {
+    "mtime": 1777315007.7200863,
+    "hash": "b79bb5f8a254780ee360520733b9a1d4"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\cross_network_realtime_solution.md": {
+    "mtime": 1777316575.413221,
+    "hash": "b11680aeced311cdf050a38c08dc5e5c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\cross_network_solution.md": {
+    "mtime": 1777315104.7866118,
+    "hash": "6b9e25db5331ec7a267c7656049ef719"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\external_access_guide.md": {
+    "mtime": 1777311591.0210896,
+    "hash": "e60b0192754b32e9cacae55eede690ac"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\NVidia NIM Log.txt": {
+    "mtime": 1776971694.5298834,
+    "hash": "a94a0524c20987aab3d102d671a46165"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\requirements.txt": {
+    "mtime": 1775761629.7764964,
+    "hash": "abe122c5b8e3fee45b8c2102cfe840fc"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\server_error_fix.md": {
+    "mtime": 1777316900.9655237,
+    "hash": "18f58fef07babad7a730197d778c3e3c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\server_error_fix2.md": {
+    "mtime": 1777317117.4684894,
+    "hash": "ddb7fcaa7e05e4fdff207a11ef4724a2"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\server_error_fixes.md": {
+    "mtime": 1777334899.6616907,
+    "hash": "d4c0693096d7b4750493c5b8fb480909"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\nvidia_apex_trader\\server_status.md": {
+    "mtime": 1777312638.2470543,
+    "hash": "890ffbd5facfdb64d526ae1d78c9bbf6"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\CHANGELOG.md": {
+    "mtime": 1778308454.9671817,
+    "hash": "f71ab3e1a890c3a7faf5e4475395b354"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\CLAUDE.md": {
+    "mtime": 1778308454.9676845,
+    "hash": "70bd401a24e0871ea55511b9a2765663"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\index.html": {
+    "mtime": 1778308454.970193,
+    "hash": "fa9973f3e2e49919d8617f023a57cf32"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\README.md": {
+    "mtime": 1778308454.9676845,
+    "hash": "36b2b367c2f332ce175afbf16ae00166"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\ROADMAP.md": {
+    "mtime": 1778308454.9676845,
+    "hash": "21168319e4e260e896d84bbba15e23ee"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\TESTS.md": {
+    "mtime": 1778308454.9686887,
+    "hash": "0472eddae0ccd42367649c83990774fe"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\docs\\plans\\2026-03-11-github-webhooks.md": {
+    "mtime": 1778308454.9686887,
+    "hash": "f9181d102dc2cac67f76a8ab85179a72"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\FinalReport.pdf": {
+    "mtime": 1776626434.481209,
+    "hash": "e2e7da170d30883b5d6153a27d7b83f2"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\ai_consensus.png": {
+    "mtime": 1776627152.075637,
+    "hash": "66c1749cb4af311223080f1df3861b03"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\apex_banner.png": {
+    "mtime": 1776551534.3862977,
+    "hash": "173a3972f2f98f3549d402c65b88c9e2"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\apex_banner_v2.png": {
+    "mtime": 1776627131.248464,
+    "hash": "a6196c814dd1c1e4a61b077afdb617c5"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\dashboard_new.png": {
+    "mtime": 1776627215.3027363,
+    "hash": "4dbe44bdd8dfcfb15d60e3a4f4af7bd4"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\performance_new.png": {
+    "mtime": 1776627219.050388,
+    "hash": "37749f2273fb94fb1d269a13840b9d53"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\report_architecture.png": {
+    "mtime": 1775900953.1215904,
+    "hash": "f6b1977d971d6e3f6ba595d097ee6a7c"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\report_dashboard.png": {
+    "mtime": 1775900796.3583784,
+    "hash": "a00895bf8229280b5e21c7fb5c548547"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\report_pipeline.png": {
+    "mtime": 1775901146.0301802,
+    "hash": "71b232bc7e5d8cbd4b804b80aad78d6d"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\public\\favicon.svg": {
+    "mtime": 1775740251.9752007,
+    "hash": "7e840862161341271697daa99a40d76b"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\public\\icons.svg": {
+    "mtime": 1775740251.9928076,
+    "hash": "3b4fcfcf393eca4d264dca4a4663bc37"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\assets\\hero.png": {
+    "mtime": 1775740251.9038844,
+    "hash": "5cf2b0762834cdddc0dd3ec1397b5011"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\assets\\react.svg": {
+    "mtime": 1775740252.0103376,
+    "hash": "f0402b67b6ce880f65666bb49e841696"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\frontend\\src\\assets\\vite.svg": {
+    "mtime": 1775740252.022857,
+    "hash": "9960a24288958394ac50e57ff638b036"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\docs\\screenshot-swarm-monitor.png": {
+    "mtime": 1778308454.970193,
+    "hash": "81f7098c6d8d88ac1787d246d73dc09b"
+  },
+  "D:\\Projects\\NEW NVdia Apex Ultimate\\RuFloUI\\public\\vite.svg": {
+    "mtime": 1778308454.9737034,
+    "hash": "fced9cd259523bd213b7393caae9f8ae"
+  }
+}

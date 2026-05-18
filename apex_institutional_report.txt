@@ -1,0 +1,58 @@
+================================================================================
+APEX INSTITUTIONAL - MT5 GLOBAL MACRO TERMINAL
+PROJECT OVERVIEW & RECENT UPDATES REPORT
+Date: May 14, 2026
+================================================================================
+
+1. PROJECT OVERVIEW
+--------------------------------------------------------------------------------
+Apex Institutional is an advanced, AI-driven algorithmic trading terminal designed for MetaTrader 5 (MT5). It leverages a 3-Agent AI swarm powered by NVIDIA NIM and OpenRouter to analyze market structure, liquidity, and momentum for Forex and Precious Metals (Gold/XAUUSD).
+
+Core Architecture:
+- Backend: FastAPI, Python, WebSockets, MT5 IPC Engine.
+- Frontend: React, Vite, Tailwind CSS (Real-time dashboards).
+- AI Consensus Pipeline:
+  * Agent 1: CLAW Fundamental Desk (Sentiment analysis)
+  * Agent 2: Macro Trend Follower (1H/4H structure alignment)
+  * Agent 3: NVIDIA Scalper (M5/M15 sniper entries)
+- Risk Management: Dynamic ATR-based position sizing, Smart Money Concepts (SMC) gatekeeping, Step-Trailing Stop Loss engine, and AI Predictive Traps.
+
+The system recently completed a full architectural pivot from legacy Crypto/Binance infrastructure to pure institutional Global Macro trading via MT5.
+
+
+2. RECENT ARCHITECTURAL UPDATES & BUG FIXES
+--------------------------------------------------------------------------------
+Over the recent development sessions, several critical optimizations and hardening patches were applied to stabilize live-trading execution and risk management.
+
+A. Risk Normalization & Asset-Class Geometry (Gold vs. Forex)
+- Issue: Gold's point value is ~47x larger than standard Forex pairs. A universal percentage clamp (e.g., 0.04%) was causing massive dollar-risk discrepancies, microscopic Gold stop-losses, and whipsaw stop-outs.
+- Fix: Implemented dynamic Asset-Class routing in `server.py`. 
+  * Gold (XAUUSD) SL/TP clamps widened to 0.15% SL (~$7 risk/min lot) and 0.35% TP.
+  * Created `FOREX_TRAIL_CONFIG` and `GOLD_TRAIL_CONFIG` to apply bespoke Step-Trailing thresholds. Gold's trail geometry now respects its higher Average True Range (ATR).
+
+B. AI Predictive Trap Geometric Enforcement
+- Issue: The AI-Trap agent was hallucinating "profit-locking" geometry for SHORT positions, generating SL values that were mathematically worse (looser) than the current SL.
+- Fix: Rewrote the system prompt to explicitly enforce strict directional rules (e.g., "For SHORT trades: lower price = more profit. Move SL DOWN"). Also repaired a broken guardrail that was incorrectly rejecting valid SHORT profit-locking values that crossed below the entry price.
+
+C. Frontend Terminology Refactor (Radar Desk)
+- Issue: The frontend UI still contained legacy crypto terms like "Binance Futures," "Liquidation," and "Squeeze."
+- Fix: Completely refactored `ClawFundamentalDesk.jsx`. 
+  * Replaced "Liquidation & Squeeze Radar" with "Global Macro & Sentiment Radar."
+  * Shifted metric language to "Volatility & Whipsaw Risk."
+  * Kept all Tailwind CSS layout and styling completely intact.
+
+D. Instrument-Aware Strike Zone Thresholds
+- Issue: The SMC "Strike Zone" proximity buffer was hardcoded to 0.40% (0.0040), which was too tight for Gold's natural volatility.
+- Fix: Updated `core/brain.py` to use a dynamic `proximity_buffer`. Forex remains at 0.40%, while Gold was widened to 0.80% to ensure smooth entry timing during volatile sessions.
+
+E. Step-Trailing Engine Stability Patch (UnboundLocalError)
+- Issue: The MT5 Step-Trailer was silently crashing after successful SL modifications due to an `UnboundLocalError` caused by a conditional `import time` shadowing the module scope.
+- Fix: Moved imports to the function header in `step_trailing_loop`, ensuring reliable step-trailing execution and continuous API tracking.
+
+F. Position Stacking Limits
+- Issue: The system clamped the maximum allowed positions globally, stunting fleet diversification.
+- Fix: Converted the global limit to a "Max Positions Per Symbol" cap. The terminal can now continuously stack trends on multiple different assets independently based on the user-defined limits.
+
+================================================================================
+END OF REPORT
+================================================================================
