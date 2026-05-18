@@ -288,7 +288,9 @@ def compress_dom_data(raw_dom: str, top_n: int = 3) -> str:
 
 
 def robust_json_parse(text: str, fallback: dict = None) -> dict:
-    """Parse JSON with regex fallback for garbled LLM output. Never crashes."""
+    """Parse JSON with regex fallback for garbled LLM output. Never crashes.
+    Enhanced for distilled reasoning models (e.g. Qwen-reasoning) that emit
+    chain-of-thought text *before* the final JSON block."""
     import re
     if fallback is None:
         fallback = {}
@@ -299,14 +301,23 @@ def robust_json_parse(text: str, fallback: dict = None) -> dict:
         return json.loads(clean)
     except json.JSONDecodeError:
         pass
-    # Regex fallback: find first {...} block
-    match = re.search(r'\{[^{}]*\}', clean, re.DOTALL)
+    # Strategy 1: Find the LAST {...} block (reasoning models put JSON at the end)
+    all_matches = list(re.finditer(r'\{[^{}]*\}', clean, re.DOTALL))
+    if all_matches:
+        # Try last match first (most likely the final JSON verdict)
+        for m in reversed(all_matches):
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                continue
+    # Strategy 2: Greedy match — captures nested braces from reasoning models
+    match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', clean, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             pass
-    # Last resort: try to find any JSON-like structure
+    # Strategy 3: Last resort — grab everything between first { and last }
     match = re.search(r'\{.*\}', clean, re.DOTALL)
     if match:
         try:
@@ -395,8 +406,14 @@ async def get_market_sentiment(nvidia_keys: list, sanity_alert: str = "", symbol
         liquidity_data_str = "Backtest Mode - Synthetic Context Provided"
 
     system_prompt = (
+        "You are an elite quantitative trading AI based on the Qwen architecture. "
+        "Analyze the provided market data concisely. "
+        "You may output a brief logical analysis, but you MUST conclude your response "
+        "with a single, strictly formatted JSON block containing your final decision. "
+        "Do not output any text after the JSON block. "
         f"Forex/Metals macro sentiment analyzer for {symbol}. "
-        'Return ONLY JSON: {"sentiment":"BULLISH|BEARISH|NEUTRAL","confidence":0-100,"squeeze_risk":"HIGH|MEDIUM|LOW","dominant_side":"LONG|SHORT|BALANCED","summary":"1 sentence"}'
+        'Output format: {"sentiment":"BULLISH"|"BEARISH"|"NEUTRAL","confidence":0-100,'
+        '"squeeze_risk":"HIGH"|"MEDIUM"|"LOW","dominant_side":"LONG"|"SHORT"|"BALANCED","summary":"1 sentence"}'
     )
 
     user_prompt = f"{context_text}"
@@ -430,48 +447,14 @@ async def get_market_sentiment(nvidia_keys: list, sanity_alert: str = "", symbol
         try:
             print(f"[CLAW] Routing Fundamental Analysis directly to NVIDIA NIM...")
             response = await asyncio.to_thread(
-                fetch_nvidia_sync,
+                call_nvidia_nim_api,
                 "https://integrate.api.nvidia.com/v1/chat/completions",
                 headers,
                 payload
             )
             
             if response.status_code == 200:
-                data = response.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-                
-                parsed = robust_json_parse(content, _neutral_fallback)
-                sentiment = parsed.get("sentiment", "NEUTRAL").upper()
-                confidence = int(parsed.get("confidence", 50))
-                squeeze_risk = parsed.get("squeeze_risk", "MEDIUM").upper()
-                dominant_side = parsed.get("dominant_side", "BALANCED").upper()
-                report = parsed.get("summary", "No summary available")
-
-                if sentiment == "BULLISH":
-                    bullish_pct, bearish_pct, neutral_pct = max(60, confidence), max(10, 100 - confidence - 20), 20
-                elif sentiment == "BEARISH":
-                    bullish_pct, bearish_pct, neutral_pct = max(10, 100 - confidence - 20), max(60, confidence), 20
-                else:
-                    bullish_pct, bearish_pct, neutral_pct = 33, 33, 34
-
-                print(f"[CLAW] Sentiment: {sentiment} ({confidence}%) | Squeeze: {squeeze_risk} | Side: {dominant_side}")
-                print(f"[CLAW] Report: {report}")
-
-                return {
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "bullish_pct": bullish_pct,
-                    "bearish_pct": bearish_pct,
-                    "neutral_pct": neutral_pct,
-                    "report": report,
-                    "liquidity_data": liquidity_data_str,
-                    "squeeze_risk": squeeze_risk,
-                    "dominant_side": dominant_side
-                }
-            elif response.status_code == 401:
-                print("[CLAW] HTTP 401 Unauthorized - check NVIDIA Fundamental Desk key in AI Brain Fleet.")
-                _neutral_fallback["report"] = "Fundamental analysis disabled: NVIDIA authentication failed (401)."
-                return _neutral_fallback
+                break
             elif response.status_code in (502, 503, 429) and attempt < max_retries:
                 if getattr(response, "text", "") in ("Circuit breaker open", "All retries exhausted"):
                     print("[CLAW] API Circuit breaker is active. Bypassing retries.")
@@ -483,23 +466,48 @@ async def get_market_sentiment(nvidia_keys: list, sanity_alert: str = "", symbol
             else:
                 print(f"[CLAW] HTTP {response.status_code}")
                 pass
-        except requests.exceptions.Timeout:
-            if attempt < max_retries:
-                print(f"[CLAW] Timeout - Retry {attempt+1}/{max_retries}...")
-                await asyncio.sleep(3)
-                continue
-            print("[CLAW] Timeout error (all retries exhausted)")
-            pass
-        except requests.exceptions.RequestException as e:
-            print(f"[CLAW] Request error: {e}")
-            pass
         except Exception as e:
             if attempt < max_retries:
-                print(f"[CLAW] NVIDIA Error: {e} - Retry {attempt+1}/{max_retries}...")
+                print(f"[CLAW] Error: {e} - Retry {attempt+1}/{max_retries}...")
                 await asyncio.sleep(3)
                 continue
-            print(f"[CLAW] NVIDIA fallback error: {e}")
-            pass
+            print(f"[CLAW] API error: {e}")
+
+    if not response or response.status_code != 200:
+        print(f"[CLAW] NVIDIA API exhausted. Triggering agent-specific local fallback...")
+        response = await asyncio.to_thread(execute_local_fallback, payload)
+
+    if response and response.status_code == 200:
+        data = response.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        parsed = robust_json_parse(content, _neutral_fallback)
+        sentiment = parsed.get("sentiment", "NEUTRAL").upper()
+        confidence = int(parsed.get("confidence", 50))
+        squeeze_risk = parsed.get("squeeze_risk", "MEDIUM").upper()
+        dominant_side = parsed.get("dominant_side", "BALANCED").upper()
+        report = parsed.get("summary", "No summary available")
+
+        if sentiment == "BULLISH":
+            bullish_pct, bearish_pct, neutral_pct = max(60, confidence), max(10, 100 - confidence - 20), 20
+        elif sentiment == "BEARISH":
+            bullish_pct, bearish_pct, neutral_pct = max(10, 100 - confidence - 20), max(60, confidence), 20
+        else:
+            bullish_pct, bearish_pct, neutral_pct = 33, 33, 34
+
+        print(f"[CLAW] Sentiment: {sentiment} ({confidence}%) | Squeeze: {squeeze_risk} | Side: {dominant_side}")
+        print(f"[CLAW] Report: {report}")
+
+        return {
+            "sentiment": sentiment,
+            "confidence": confidence,
+            "bullish_pct": bullish_pct,
+            "bearish_pct": bearish_pct,
+            "neutral_pct": neutral_pct,
+            "report": report,
+            "liquidity_data": liquidity_data_str,
+            "squeeze_risk": squeeze_risk,
+            "dominant_side": dominant_side
+        }
 
     print(f"[CLAW] Fundamental analysis offline or failed.")
     return _neutral_fallback
@@ -519,10 +527,12 @@ def _get_max_leverage_setting() -> int:
     return 10
 
 def execute_local_fallback(payload: dict) -> requests.Response:
-    """Route to local LM Studio with COMPRESSED prompt. Max 150 tokens output.
-    FIX #2: Increased max_tokens from 80 → 150 to prevent JSON truncation.
-    FIX #3: Clamps leverage in the response to the user's max_leverage setting."""
-    print(f"[LOCAL-FALLBACK] NVIDIA API unavailable. Routing to LM Studio (RTX 4060)...")
+    """Route to local LM Studio with COMPRESSED prompt. Max 1200 tokens output.
+    FIX #2: Increased max_tokens 80 → 150 → 400 → 1200 for distilled reasoning + JSON.
+    FIX #3: Clamps leverage in the response to the user's max_leverage setting.
+    FIX #4: Tuned for qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2.
+    FIX #5: 400→1200 — reasoning tokens regularly exceed 300, truncating JSON."""
+    print(f"[LOCAL-FALLBACK] NVIDIA API unavailable. Routing to LM Studio (RTX 4060 / Qwen-Reasoning)...")
     try:
         messages = payload.get("messages", [])
         # Keep original system prompt (already optimized), compress user content
@@ -532,12 +542,14 @@ def execute_local_fallback(payload: dict) -> requests.Response:
         if len(user_content) > 500:
             user_content = compress_candle_data(user_content, max_candles=3)
         fallback_payload = {
+            "model": "local-model",
             "messages": [
-                {"role": "system", "content": sys_content[:500]},
-                {"role": "user", "content": user_content[:500]}
+                {"role": "system", "content": sys_content[:800]},
+                {"role": "user", "content": user_content[:700]}
             ],
             "temperature": 0.1,
-            "max_tokens": 150  # FIX #2: was 80, JSON was truncating mid-field
+            "max_tokens": 1200,  # FIX #5: 400→1200 — reasoning burns ~300+ tokens before JSON
+            "stream": False
         }
         response = requests.post(LOCAL_LLM_URL, json=fallback_payload, timeout=30)
 
@@ -579,7 +591,7 @@ def execute_local_fallback(payload: dict) -> requests.Response:
                 }
         return FakeResponse()
 
-def fetch_nvidia_sync(url: str, headers: dict, payload: dict, max_retries: int = 3) -> requests.Response:
+def call_nvidia_nim_api(url: str, headers: dict, payload: dict, max_retries: int = 3) -> requests.Response:
     """Synchronous NVIDIA API call using requests (runs in thread pool)
     Implements retry with exponential backoff on 429 Rate Limit errors.
     Circuit breaker prevents repeated calls when API is down.
@@ -589,18 +601,6 @@ def fetch_nvidia_sync(url: str, headers: dict, payload: dict, max_retries: int =
     Timeouts are no longer treated as rate limit errors (they're network issues).
     """
     global last_nvidia_call, rate_limit_error_count, last_rate_limit_time
-    global nvidia_circuit_broken, nvidia_circuit_failure_count, nvidia_circuit_last_failure
-
-    current_time = time.time()
-
-    # CIRCUIT BREAKER: Check if circuit is open
-    if nvidia_circuit_broken:
-        if current_time - nvidia_circuit_last_failure >= NVIDIA_CIRCUIT_COOLDOWN:
-            print(f"[NVIDIA] Circuit breaker testing API availability...")
-            nvidia_circuit_broken = False  # Allow one test call
-        else:
-            print(f"[NVIDIA] Circuit breaker OPEN — API calls skipped for {NVIDIA_CIRCUIT_COOLDOWN - int(current_time - nvidia_circuit_last_failure)}s")
-            return execute_local_fallback(payload)
 
     for attempt in range(max_retries):
         current_time = time.time()
@@ -620,11 +620,12 @@ def fetch_nvidia_sync(url: str, headers: dict, payload: dict, max_retries: int =
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=25, verify=False)
         except requests.exceptions.Timeout:
-            # Timeouts are NOT rate limit errors — track as circuit failure
-            print(f"[NVIDIA] Timeout. Bypassing retries and triggering immediate local fallback.")
-            nvidia_circuit_failure_count += 1
-            nvidia_circuit_last_failure = time.time()
-            return execute_local_fallback(payload)
+            print(f"[NVIDIA] Timeout. Bypassing retries...")
+            class TimeoutResponse:
+                status_code = 408
+                text = "Request Timeout"
+                def json(self): return {}
+            return TimeoutResponse()
 
         # Handle 429 errors with exponential backoff + jitter
         if response.status_code == 429:
@@ -636,35 +637,20 @@ def fetch_nvidia_sync(url: str, headers: dict, payload: dict, max_retries: int =
             time.sleep(sleep_time)
             continue
 
-        # SUCCESS: Reset backoff state and circuit breaker so future calls don't sleep needlessly
+        # SUCCESS: Reset backoff state
         if response.status_code == 200:
             if rate_limit_error_count > 0:
                 print(f"[NVIDIA] Success after {rate_limit_error_count} previous 429 errors — backoff cleared")
                 rate_limit_error_count = 0
-            if nvidia_circuit_failure_count > 0:
-                print(f"[NVIDIA] Circuit breaker closed after {nvidia_circuit_failure_count} failures")
-                nvidia_circuit_failure_count = 0
             return response
-
-        # Other HTTP errors - track as circuit failure
-        if response.status_code >= 500:
-            nvidia_circuit_failure_count += 1
-            nvidia_circuit_last_failure = time.time()
-            print(f"[NVIDIA] Server error {response.status_code}, failure count: {nvidia_circuit_failure_count}")
 
         return response
 
-    # If we exhausted all retries, track as circuit failure
-    nvidia_circuit_failure_count += 1
-    nvidia_circuit_last_failure = time.time()
-    print(f"[NVIDIA] All {max_retries} retries exhausted — circuit failure count: {nvidia_circuit_failure_count}")
-
-    # Open circuit if threshold reached
-    if nvidia_circuit_failure_count >= NVIDIA_CIRCUIT_THRESHOLD:
-        print(f"[NVIDIA] CIRCUIT BREAKER OPENED — API disabled for {NVIDIA_CIRCUIT_COOLDOWN}s")
-        nvidia_circuit_broken = True
-
-    return execute_local_fallback(payload)
+    class ExhaustedResponse:
+        status_code = 500
+        text = "All retries exhausted"
+        def json(self): return {}
+    return ExhaustedResponse()
 
 def get_optimized_parameters(symbol: str):
     # OBSOLETE: Replaced by Dynamic ATR Volatility Engine
@@ -680,9 +666,15 @@ async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h:
     compact_4h = compress_candle_data(candle_4h, max_candles=3)
 
     system_prompt = (
+        "You are an elite quantitative trading AI based on the Qwen architecture. "
+        "Analyze the provided market data concisely. "
+        "You may output a brief logical analysis, but you MUST conclude your response "
+        "with a single, strictly formatted JSON block containing your final decision. "
+        "Do not output any text after the JSON block. "
         f"Forex/Metals macro trend follower for {symbol}. Trend bias: {trend_bias_text}. "
         "Follow the trend. BUY if bullish, SELL if bearish, HOLD if unclear. Never counter-trend. "
-        'Return ONLY JSON: {"decision":"BUY|SELL|HOLD","confidence":0-100,"volatility":"low|medium|high","recommended_leverage":1-50,"reasoning":"brief"}'
+        'Output format: {"decision":"BUY"|"SELL"|"HOLD","confidence":0-100,'
+        '"volatility":"low"|"medium"|"high","recommended_leverage":1-50,"reasoning":"brief"}'
     )
 
     user_prompt = f"1H:{compact_1h}\n4H:{compact_4h}"
@@ -700,6 +692,7 @@ async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h:
 
     _hold = {"decision": "HOLD", "confidence": 0, "reasoning": ""}
 
+    response = None
     max_retries = 2
     for attempt in range(max_retries + 1):
         active_key = NVIDIA_KEYS[attempt % len(NVIDIA_KEYS)] if NVIDIA_KEYS else nvidia_key
@@ -711,27 +704,14 @@ async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h:
         try:
             print(f"[MACRO] Routing Macro Trend Analysis directly to NVIDIA NIM...")
             response = await asyncio.to_thread(
-                fetch_nvidia_sync,
+                call_nvidia_nim_api,
                 "https://integrate.api.nvidia.com/v1/chat/completions",
                 rotated_headers,
                 payload
             )
             
             if response.status_code == 200:
-                data = response.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-                result = robust_json_parse(content, _hold)
-                decision = result.get("decision", "HOLD").upper()
-                volatility = result.get("volatility", "medium")
-                rec_leverage = min(50, max(1, int(result.get("recommended_leverage", 10))))
-                print(f"[MACRO TREND] {decision} ({result.get('confidence', 0)}%) | Vol: {volatility} | Lev: {rec_leverage}x")
-                return {
-                    "decision": decision,
-                    "confidence": result.get("confidence", 0),
-                    "volatility": volatility,
-                    "recommended_leverage": rec_leverage,
-                    "reasoning": result.get("reasoning", "")
-                }
+                break
             elif response.status_code in (502, 503, 429) and attempt < max_retries:
                 if getattr(response, "text", "") in ("Circuit breaker open", "All retries exhausted"):
                     return {**_hold, "reasoning": "Circuit breaker active"}
@@ -742,19 +722,33 @@ async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h:
             else:
                 print(f"[MACRO] HTTP {response.status_code}: {response.text[:200]}")
                 return {**_hold, "reasoning": f"HTTP error: {response.status_code}"}
-        except requests.exceptions.Timeout:
+        except Exception as e:
             if attempt < max_retries:
-                print(f"[MACRO] Timeout - Retry {attempt+1}/{max_retries}...")
+                print(f"[MACRO] Error: {e} - Retry {attempt+1}/{max_retries}...")
                 await asyncio.sleep(3)
                 continue
-            print("[MACRO] Timeout error (all retries exhausted)")
-            return {**_hold, "reasoning": "Request timeout"}
-        except requests.exceptions.RequestException as e:
-            print(f"[MACRO] Request error: {e}")
-            return {**_hold, "reasoning": f"Connection error: {str(e)}"}
-        except Exception as e:
-            print(f"[MACRO] Error: {e}")
-            return {**_hold, "reasoning": str(e)}
+            print(f"[MACRO] API error: {e}")
+
+    if not response or response.status_code != 200:
+        print(f"[MACRO] NVIDIA API exhausted. Triggering agent-specific local fallback...")
+        response = await asyncio.to_thread(execute_local_fallback, payload)
+
+    if response and response.status_code == 200:
+        data = response.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        result = robust_json_parse(content, _hold)
+        decision = result.get("decision", "HOLD").upper()
+        volatility = result.get("volatility", "medium")
+        rec_leverage = min(50, max(1, int(result.get("recommended_leverage", 10))))
+        print(f"[MACRO TREND] {decision} ({result.get('confidence', 0)}%) | Vol: {volatility} | Lev: {rec_leverage}x")
+        return {
+            "decision": decision,
+            "confidence": result.get("confidence", 0),
+            "volatility": volatility,
+            "recommended_leverage": rec_leverage,
+            "reasoning": result.get("reasoning", "")
+        }
+
     return {**_hold, "reasoning": "All retries exhausted"}
 
 async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float = 0, trading_memory: str = "", sanity_alert: str = "", symbol: str = "GOLD", trend_bias_text: str = "NEUTRAL (+0)", h1_bias: str = "") -> dict:
@@ -779,9 +773,15 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
     # Inject HTF bias so the model knows the H1 direction
     htf_line = f" HTF H1 bias: {h1_bias}. Only output signals matching HTF direction." if h1_bias and h1_bias != "SKIP" else ""
     system_prompt = (
+        "You are an elite quantitative trading AI based on the Qwen architecture. "
+        "Analyze the provided market data concisely. "
+        "You may output a brief logical analysis, but you MUST conclude your response "
+        "with a single, strictly formatted JSON block containing your final decision. "
+        "Do not output any text after the JSON block. "
         f"Forex/Metals scalper for {symbol} at {current_price:,.2f}. Trend: {trend_bias_text}.{htf_line} "
         "Follow the trend direction only. Never counter-trend. "
-        'Return ONLY JSON: {"decision":"BUY|SELL|HOLD","confidence":0-100,"entry_price":number,"stop_loss_pct":0.1-3.0,"take_profit_pct":0.3-10.0,"leverage":1-50,"reasoning":"brief"}'
+        'Output format: {"decision":"BUY"|"SELL"|"HOLD","confidence":0-100,"entry_price":number,'
+        '"stop_loss_pct":0.1-3.0,"take_profit_pct":0.3-10.0,"leverage":1-50,"reasoning":"brief"}'
     )
 
     user_prompt = f"{compact_data}"
@@ -797,6 +797,7 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
         "response_format": {"type": "json_object"}
     }
 
+    response = None
     max_retries = 2
     for attempt in range(max_retries + 1):
         active_key = NVIDIA_KEYS[attempt % len(NVIDIA_KEYS)] if NVIDIA_KEYS else nvidia_key
@@ -808,37 +809,14 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
         try:
             print(f"[SCALPER] Executing short-term logic via NVIDIA NIM...")
             response = await asyncio.to_thread(
-                fetch_nvidia_sync,
+                call_nvidia_nim_api,
                 "https://integrate.api.nvidia.com/v1/chat/completions",
                 rotated_headers,
                 payload
             )
 
             if response.status_code == 200:
-                data = response.json()
-                content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-                result = robust_json_parse(content, _hold)
-                decision = result.get("decision", "HOLD").upper()
-                sl_pct = min(3.0, max(0.3, float(result.get("stop_loss_pct", 1.5))))
-                tp_pct = min(10.0, max(0.5, float(result.get("take_profit_pct", 4.0))))
-                ai_leverage = min(50, max(1, int(result.get("leverage", 10))))
-                raw_entry = result.get("entry_price", "")
-                try:
-                    parsed_entry = float(raw_entry)
-                except (TypeError, ValueError):
-                    parsed_entry = 0.0
-                entry_price = round(parsed_entry, 5) if parsed_entry > 0 else round(current_price, 5)
-                confidence = result.get("confidence", 0)
-                print(f"[SCALPER] {decision} @ {entry_price} ({confidence}%) | SL: {sl_pct}% | TP: {tp_pct}% | Lev: {ai_leverage}x")
-                return {
-                    "decision": decision,
-                    "confidence": confidence,
-                    "entry_price": entry_price,
-                    "stop_loss_pct": sl_pct,
-                    "take_profit_pct": tp_pct,
-                    "leverage": ai_leverage,
-                    "reasoning": result.get("reasoning", "")
-                }
+                break
             elif response.status_code in (502, 503, 429) and attempt < max_retries:
                 if getattr(response, "text", "") in ("Circuit breaker open", "All retries exhausted"):
                     return {**_hold, "reasoning": "Circuit breaker active"}
@@ -849,19 +827,43 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
             else:
                 print(f"[SCALPER] HTTP {response.status_code}: {response.text[:200]}")
                 return {**_hold, "reasoning": f"HTTP error: {response.status_code}"}
-        except requests.exceptions.Timeout:
+        except Exception as e:
             if attempt < max_retries:
-                print(f"[SCALPER] Timeout - Retry {attempt+1}/{max_retries}...")
+                print(f"[SCALPER] Error: {e} - Retry {attempt+1}/{max_retries}...")
                 await asyncio.sleep(3)
                 continue
-            print("[SCALPER] Timeout error (all retries exhausted)")
-            return {**_hold, "reasoning": "Request timeout"}
-        except requests.exceptions.RequestException as e:
-            print(f"[SCALPER] Request error: {e}")
-            return {**_hold, "reasoning": f"Connection error: {str(e)}"}
-        except Exception as e:
-            print(f"[SCALPER] Error: {e}")
-            return {**_hold, "reasoning": str(e)}
+            print(f"[SCALPER] API error: {e}")
+
+    if not response or response.status_code != 200:
+        print(f"[SCALPER] NVIDIA API exhausted. Triggering agent-specific local fallback...")
+        response = await asyncio.to_thread(execute_local_fallback, payload)
+
+    if response and response.status_code == 200:
+        data = response.json()
+        content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        result = robust_json_parse(content, _hold)
+        decision = result.get("decision", "HOLD").upper()
+        sl_pct = min(3.0, max(0.3, float(result.get("stop_loss_pct", 1.5))))
+        tp_pct = min(10.0, max(0.5, float(result.get("take_profit_pct", 4.0))))
+        ai_leverage = min(50, max(1, int(result.get("leverage", 10))))
+        raw_entry = result.get("entry_price", "")
+        try:
+            parsed_entry = float(raw_entry)
+        except (TypeError, ValueError):
+            parsed_entry = 0.0
+        entry_price = round(parsed_entry, 5) if parsed_entry > 0 else round(current_price, 5)
+        confidence = result.get("confidence", 0)
+        print(f"[SCALPER] {decision} @ {entry_price} ({confidence}%) | SL: {sl_pct}% | TP: {tp_pct}% | Lev: {ai_leverage}x")
+        return {
+            "decision": decision,
+            "confidence": confidence,
+            "entry_price": entry_price,
+            "stop_loss_pct": sl_pct,
+            "take_profit_pct": tp_pct,
+            "leverage": ai_leverage,
+            "reasoning": result.get("reasoning", "")
+        }
+
     return {**_hold, "reasoning": "All retries exhausted"}
 
 
@@ -1040,7 +1042,7 @@ async def evaluate_market(memory_text: str, market_data_text: str, margin: float
         print(f"[SCALPER] Live {symbol} price unavailable from server state.")
 
     # PARALLEL EXECUTION: 3-Way Stagger to prevent 429 bursts
-    # Increased to 3s gaps + global rate limiter in fetch_nvidia_sync keeps us under 30 RPM
+    # Increased to 3s gaps + global rate limiter in call_nvidia_nim_api keeps us under 30 RPM
     print(f"[PARALLEL] Running CLAW, Macro, and Scalper with 3s 3-way stagger...")
 
     # 1. Fire CLAW immediately (using OPENROUTER_API_KEY / Fundamental Key)
@@ -1365,7 +1367,7 @@ Select the best spread (1-{len(top5)}) or 0 for HOLD."""
             }
 
             response = await asyncio.to_thread(
-                fetch_nvidia_sync,
+                call_nvidia_nim_api,
                 "https://integrate.api.nvidia.com/v1/chat/completions",
                 headers, payload
             )
