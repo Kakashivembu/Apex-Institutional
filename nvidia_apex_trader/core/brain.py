@@ -503,12 +503,13 @@ def _get_max_leverage_setting() -> int:
     return 10
 
 def execute_local_fallback(payload: dict) -> requests.Response:
-    """Route to local LM Studio with COMPRESSED prompt. Max 1200 tokens output.
+    """Route to local LM Studio with COMPRESSED prompt. Max 200 tokens output.
     FIX #2: Increased max_tokens 80 → 150 → 400 → 1200 for distilled reasoning + JSON.
     FIX #3: Clamps leverage in the response to the user's max_leverage setting.
     FIX #4: Tuned for qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2.
-    FIX #5: 400→1200 — reasoning tokens regularly exceed 300, truncating JSON."""
-    print(f"[LOCAL-FALLBACK] NVIDIA API unavailable. Routing to LM Studio (RTX 4060 / Qwen-Reasoning)...")
+    FIX #5: 400→1200 — reasoning burns ~300+ tokens before JSON.
+    FIX #6: 1200→200 — switched to non-reasoning Qwen; only need JSON output, no CoT."""
+    print(f"[LOCAL-FALLBACK] NVIDIA API unavailable. Routing to LM Studio (RTX 4060 / Qwen-Standard)...")
     try:
         messages = payload.get("messages", [])
         # Keep original system prompt (already optimized), compress user content
@@ -524,7 +525,7 @@ def execute_local_fallback(payload: dict) -> requests.Response:
                 {"role": "user", "content": user_content[:700]}
             ],
             "temperature": 0.1,
-            "max_tokens": 1200,  # FIX #5: 400→1200 — reasoning burns ~300+ tokens before JSON
+            "max_tokens": 200,  # FIX #6: 1200→200 — non-reasoning model, JSON-only output
             "stream": False
         }
         response = requests.post(LOCAL_LLM_URL, json=fallback_payload, timeout=120)
@@ -613,15 +614,12 @@ async def call_nvidia_nim_api(payload: dict, api_key: str = None, max_retries: i
                 def json(self): return {}
             return TimeoutResponse()
 
-        # Handle 429 errors with exponential backoff + jitter (non-blocking)
+        # Handle 429 errors — INSTANT FALLBACK, no retries, no backoff
+        # The caller already routes to LM Studio on non-200; retries just add 5-45s of dead latency.
         if response.status_code == 429:
             state["error_count"] += 1
-            import random
-            jitter = random.uniform(0.5, 2.0)
-            sleep_time = min(15, (2 ** attempt) + jitter)
-            print(f"[NVIDIA] Rate limited (429)! Error count: {state['error_count']}. Retrying in {sleep_time:.1f}s (jitter: {jitter:.1f}s)...")
-            await asyncio.sleep(sleep_time)
-            continue
+            print(f"[NVIDIA] 429 Rate Limit hit. Bypassing retries for instant fallback. (Error count: {state['error_count']})")
+            return response
 
         # SUCCESS: Reset backoff state
         if response.status_code == 200:

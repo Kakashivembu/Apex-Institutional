@@ -1966,15 +1966,16 @@ async def market_data_loop():
                                 "strength": 0,
                                 "reasoning": f"NEWS KILLSWITCH: {reason}"
                             }
-                            await asyncio.sleep(FLEET_SCAN_DELAY)
+                            await asyncio.sleep(0.01)  # Yield to event loop immediately — symbol already skipped
                             continue
 
                         # 2. Gatekeeper & 3. AI Consensus Pipeline
                         await fetch_real_market_data(symbol=symbol, skip_consensus=False)
                         
-                        # 4. API Pacing
+                        # 4. API Pacing + Event Loop Yield
                         # Inter-symbol throttle: prevents API 429s and VRAM overflow on 40-symbol fleet
                         await asyncio.sleep(FLEET_INTER_SYMBOL_DELAY)
+                        await asyncio.sleep(0.01)  # Yield to event loop — prevents terminal freezing during 40-symbol scan
                         # End-of-cycle delay only after the last symbol
                         if _scan_idx == len(TARGET_SYMBOLS) - 1:
                             await asyncio.sleep(FLEET_SCAN_DELAY)
