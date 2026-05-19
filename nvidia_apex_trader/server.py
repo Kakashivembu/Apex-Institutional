@@ -331,6 +331,8 @@ def get_trail_config(symbol: str) -> dict:
     return FOREX_TRAIL_CONFIG
 
 def calculate_consensus():
+    """Pure directional averaging — HOLD/NEUTRAL agents are abstentions, not penalties.
+    Only active directional voters are averaged. Synchronized with brain.py consensus logic."""
     global last_swarm_decisions
     agent_weights = {
         "NVIDIA_MACRO": 0.40,
@@ -350,8 +352,7 @@ def calculate_consensus():
         "NEUTRAL": 0,
     }
 
-    directional_score = 0.0
-    hold_penalty = 0.0
+    active_votes = []  # (signed_score, weight)
     for decision in last_swarm_decisions:
         agent = str(decision.get("agent", "")).upper()
         direction = str(decision.get("decision", "HOLD")).upper()
@@ -361,15 +362,17 @@ def calculate_consensus():
 
         weight = agent_weights.get(agent, 0)
         direction_int = direction_map.get(direction, 0)
-        if direction_int == 0:
-            hold_penalty += confidence * weight
-        else:
-            directional_score += direction_int * confidence * weight
+        if direction_int != 0:
+            # Active directional vote — include in average
+            active_votes.append((direction_int * confidence * weight, weight))
+        # HOLD/NEUTRAL = abstention — excluded entirely (no hold_penalty)
 
-    if directional_score > 0:
-        final_score = max(0, directional_score - hold_penalty)
+    if active_votes:
+        total_active_weight = sum(w for _, w in active_votes)
+        raw_directional = sum(s for s, _ in active_votes)
+        final_score = raw_directional / total_active_weight if total_active_weight > 0 else 0.0
     else:
-        final_score = min(0, directional_score + hold_penalty)
+        final_score = 0.0
 
     if final_score >= 0.40:
         direction = "BUY"

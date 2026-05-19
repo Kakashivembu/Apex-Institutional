@@ -1023,34 +1023,44 @@ async def evaluate_market(memory_text: str, market_data_text: str, margin: float
             return confidence_value / 100
         return confidence_value
 
-    weighted_votes = {
-        "Macro": direction_map.get(macro_decision, 0) * normalize_confidence(macro_result.get("confidence", 0)) * 0.40,
-        "CLAW": direction_map.get(claw_vote, 0) * normalize_confidence(sentiment_result.get("confidence", 0)) * 0.35,
-        "Scalper": direction_map.get(scalper_decision, 0) * normalize_confidence(scalper_result.get("confidence", 0)) * 0.25,
-    }
+    # ── PURE DIRECTIONAL AVERAGING (HoldGravity ELIMINATED) ──
+    # HOLD/NEUTRAL votes are passive abstentions — they do NOT penalize the score.
+    # Only active directional voters (BUY/SELL/LONG/SHORT/BULLISH/BEARISH) are averaged.
+    # This prevents a single 80% MACRO BUY from being dragged to 20% by two abstaining agents.
+    agent_configs = [
+        ("Macro",   macro_decision,   normalize_confidence(macro_result.get("confidence", 0)),     0.40),
+        ("CLAW",    claw_vote,        normalize_confidence(sentiment_result.get("confidence", 0)), 0.35),
+        ("Scalper", scalper_decision,  normalize_confidence(scalper_result.get("confidence", 0)),   0.25),
+    ]
 
-    # ── FIX #1: STACK MODE HOLD-GRAVITY REDUCTION ──
-    # When a position is already open (STACK MODE), reduce the conservative
-    # hold bias from the full agent weights to 0.05 per-agent. This lets the
-    # bot lean into a confirmed trend and add to winners instead of holding back.
-    active_positions_on_symbol = len([p for p in (active_positions or []) if p.get("symbol", "") == symbol]) if active_positions else 0
-    if active_positions_on_symbol > 0:
-        hold_gravity = 0.05  # Stack mode — lean into confirmed trend
-        hold_mode_label = "STACK"
-    else:
-        hold_gravity = 0.21  # New entry mode — be conservative
-        hold_mode_label = "ENTRY"
+    active_votes = []       # (agent_name, signed_score, weight)
+    abstentions = []        # agents that voted HOLD/NEUTRAL
+    weighted_votes = {}     # For logging compatibility
 
-    hold_penalty = sum([
-        hold_gravity * normalize_confidence(macro_result.get("confidence", 0)) if direction_map.get(macro_decision, 0) == 0 else 0,
-        hold_gravity * normalize_confidence(sentiment_result.get("confidence", 0)) if direction_map.get(claw_vote, 0) == 0 else 0,
-        hold_gravity * normalize_confidence(scalper_result.get("confidence", 0)) if direction_map.get(scalper_decision, 0) == 0 else 0,
-    ])
-    directional_score = sum(weighted_votes.values())
-    if directional_score > 0:
-        final_score = max(0, directional_score - hold_penalty)
+    for agent_name, decision, conf, weight in agent_configs:
+        direction_int = direction_map.get(decision, 0)
+        if direction_int != 0:
+            # Active directional vote — include in average
+            signed_score = direction_int * conf * weight
+            active_votes.append((agent_name, signed_score, weight))
+            weighted_votes[agent_name] = signed_score
+        else:
+            # HOLD/NEUTRAL = abstention — excluded from scoring entirely
+            abstentions.append(agent_name)
+            weighted_votes[agent_name] = 0.0
+
+    if active_votes:
+        # Normalize: divide by the sum of ACTIVE weights only (not total 1.0)
+        total_active_weight = sum(w for _, _, w in active_votes)
+        raw_directional = sum(s for _, s, _ in active_votes)
+        # Re-scale so that a single 80% BUY agent with 0.40 weight still produces 0.80 * 0.40/0.40 = 0.80
+        final_score = raw_directional / total_active_weight if total_active_weight > 0 else 0.0
     else:
-        final_score = min(0, directional_score + hold_penalty)
+        # All agents abstained — pure HOLD
+        final_score = 0.0
+        raw_directional = 0.0
+        total_active_weight = 0.0
+
     confidence = min(100, int(abs(final_score) * 100))
 
     if final_score >= 0.40:
@@ -1060,12 +1070,14 @@ async def evaluate_market(memory_text: str, market_data_text: str, margin: float
     else:
         final_action = "HOLD"
         if macro_decision != "HOLD" or scalper_decision != "HOLD" or claw_vote in ("BULLISH", "BEARISH"):
-            reasoning = f"Weighted consensus score {final_score:+.4f} below execution threshold. Trade BLOCKED."
+            reasoning = f"Directional consensus score {final_score:+.4f} below execution threshold. Trade BLOCKED."
 
+    abstention_str = f" | Abstentions: {', '.join(abstentions)}" if abstentions else ""
     print(
-        f"[CONSENSUS] Weighted score={final_score:+.4f} "
-        f"(Directional={directional_score:+.4f}, HoldGravity={hold_penalty:.4f} [{hold_mode_label} mode, base={hold_gravity}]; "
-        f"Macro={weighted_votes['Macro']:+.4f}, CLAW={weighted_votes['CLAW']:+.4f}, Scalper={weighted_votes['Scalper']:+.4f}) "
+        f"[CONSENSUS] Score={final_score:+.4f} "
+        f"(Active voters: {len(active_votes)}/3, Active weight: {total_active_weight:.2f}; "
+        f"Macro={weighted_votes.get('Macro', 0):+.4f}, CLAW={weighted_votes.get('CLAW', 0):+.4f}, Scalper={weighted_votes.get('Scalper', 0):+.4f}"
+        f"{abstention_str}) "
         f"=> {final_action}"
     )
 
