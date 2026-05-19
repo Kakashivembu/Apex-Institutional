@@ -388,49 +388,54 @@ async def detect_tick_velocity(symbol: str) -> dict:
         "ma_vol": round(float(ma_vol), 2)
     }
 
-def check_killzones(timestamp_str: str = "", broker_offset: int = 0) -> bool:
+def get_smc_killzone() -> tuple:
     """
-    Checks if the given timestamp falls within high-probability institutional
-    trading windows (NO Asian session — low liquidity causes bad fills):
-    - London Killzone: 07:00 - 11:00 UTC
-    - New York Killzone: 13:00 - 17:00 UTC
+    Checks if the current time falls within high-probability SMC Killzones
+    based strictly on New York time (EST/EDT), making it immune to local/broker offsets.
     
-    If timestamp_str is empty (live mode), uses datetime.utcnow().
+    Killzones:
+      - London Killzone:  2:00 AM – 5:00 AM  NY Time
+      - NY AM Killzone:   9:30 AM – 11:00 AM NY Time  (Silver Bullet window)
+      - NY PM Killzone:   1:30 PM – 4:00 PM  NY Time
+    
+    Dead Zones (BLOCKED):
+      - Asian Session, NY Lunch (11:00–13:30), NY/London Gap (5:00–9:30)
+    
+    Returns:
+        (bool, str): (is_active, zone_name)
     """
+    import pytz
     from datetime import datetime
-    
-    if not timestamp_str:
-        now = datetime.utcnow()
-        hour = now.hour
-    else:
-        try:
-            dt = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M")
-            hour = dt.hour
-        except ValueError:
-            try:
-                dt = datetime.fromisoformat(timestamp_str)
-                hour = dt.hour
-            except ValueError:
-                return True
 
-    adjusted_hour = (hour + broker_offset) % 24
-    
-    # TIGHTENED: London + NY only. Asian session REMOVED to prevent low-liquidity entries.
-    LONDON_OPEN = 7
-    LONDON_CLOSE = 11
-    NY_OPEN = 13
-    NY_CLOSE = 17
+    # Force calculation in pure New York Time — immune to broker/server UTC offsets
+    ny_tz = pytz.timezone('America/New_York')
+    ny_time = datetime.now(pytz.utc).astimezone(ny_tz)
+    current_time_float = ny_time.hour + (ny_time.minute / 60.0)
 
-    in_london = LONDON_OPEN <= adjusted_hour <= LONDON_CLOSE
-    in_ny = NY_OPEN <= adjusted_hour <= NY_CLOSE
+    # Zone 1: London Killzone (2:00 AM to 5:00 AM NY Time)
+    if 2.0 <= current_time_float < 5.0:
+        return True, "London Killzone"
 
-    return in_london or in_ny
+    # Zone 2: NY AM Killzone & Silver Bullet (9:30 AM to 11:00 AM NY Time)
+    if 9.5 <= current_time_float < 11.0:
+        return True, "NY AM Killzone"
+
+    # Zone 3: NY PM Killzone (1:30 PM to 4:00 PM NY Time)
+    if 13.5 <= current_time_float < 16.0:
+        return True, "NY PM Killzone"
+
+    # All other times (Asian, NY Lunch, NY/London gap)
+    return False, "Dead Zone"
 
 
 def is_killzone_active() -> bool:
-    """Convenience function: returns True if current UTC time is within London or NY killzone.
-    Called before every new entry attempt. Trailing/management of open trades is always allowed."""
-    return check_killzones("")
+    """
+    Convenience wrapper for the Gatekeeper.
+    Returns True ONLY if a valid SMC Killzone is active.
+    Called before every new entry attempt. Trailing/management of open trades is always allowed.
+    """
+    is_active, _ = get_smc_killzone()
+    return is_active
 
 def detect_asian_range(candles: list, current_price: float) -> str:
     """

@@ -31,17 +31,24 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 NVIDIA_KEYS = [k for k in [NVIDIA_API_KEY, NVIDIA_API_KEY_2] if k]
 print(f"[BRAIN] Loaded {len(NVIDIA_KEYS)} NVIDIA API key(s) for rotation")
 
-# NVIDIA API rate limiting (40 RPM)
-last_nvidia_call = 0
+# API Key rate limiting state dictionary
+api_key_states = {}
+
+def get_key_state(api_key):
+    if api_key not in api_key_states:
+        api_key_states[api_key] = {
+            "last_call": 0.0,
+            "error_count": 0,
+            "last_rate_limit_time": 0.0
+        }
+    return api_key_states[api_key]
+
 RATE_LIMIT_DELAY = 1.5 # 1.5 seconds between calls (40 RPM = 1.5s per call)
 
-# Track 429 errors for exponential backoff
 # Memory limits
 MAX_MEMORY_MESSAGES = 10
 FLIGHT_RECORDER_FILE = "apex_flight_state.json"
 GLOBAL_COOLDOWNS = {}
-rate_limit_error_count = 0
-last_rate_limit_time = 0
 
 # =============================================================================
 # GLOBAL NVIDIA NIM RATE LIMITER (Token Bucket per API key)
@@ -52,21 +59,22 @@ NVIDIA_MIN_GAP = 2.5           # Minimum 2.5 seconds between calls on same key
 NVIDIA_CALL_LOG = {}           # {api_key: [timestamps]}  rolling 60s window
 NVIDIA_LAST_CALL_PER_KEY = {}  # {api_key: last_timestamp}
 
-import threading
-_nvidia_lock = threading.Lock()
+_nvidia_lock = asyncio.Lock()
 
-def _wait_for_nvidia_rate_limit(api_key: str):
-    """Global pre-flight rate limiter. Sleeps proactively if key is near limit."""
+async def _wait_for_nvidia_rate_limit(api_key: str):
+    """Async global pre-flight rate limiter. Sleeps proactively if key is near limit.
+    FIX: Converted from threading.Lock + time.sleep to asyncio.Lock + asyncio.sleep
+    to prevent event-loop blocking that caused 429 cascades across all 3 agents."""
     global NVIDIA_CALL_LOG, NVIDIA_LAST_CALL_PER_KEY
     now = time.time()
-    with _nvidia_lock:
+    async with _nvidia_lock:
         # 1. Enforce minimum gap between calls on the same key
         last = NVIDIA_LAST_CALL_PER_KEY.get(api_key, 0)
         gap = now - last
         if gap < NVIDIA_MIN_GAP:
             sleep_needed = NVIDIA_MIN_GAP - gap
             print(f"[NVIDIA-RATE-LIMITER] Key gap too short ({gap:.2f}s < {NVIDIA_MIN_GAP}s). Sleeping {sleep_needed:.2f}s...")
-            time.sleep(sleep_needed)
+            await asyncio.sleep(sleep_needed)
             now = time.time()
 
         # 2. Rolling 60-second window: prune old timestamps
@@ -81,7 +89,7 @@ def _wait_for_nvidia_rate_limit(api_key: str):
             sleep_needed = max(0, sleep_until - now)
             if sleep_needed > 0:
                 print(f"[NVIDIA-RATE-LIMITER] Key at {len(log)}/30 RPM. Sleeping {sleep_needed:.1f}s until window clears...")
-                time.sleep(sleep_needed)
+                await asyncio.sleep(sleep_needed)
                 now = time.time()
                 # Re-prune after sleep
                 log = [t for t in log if t > (now - 60)]
@@ -436,42 +444,10 @@ async def get_market_sentiment(nvidia_keys: list, sanity_alert: str = "", symbol
         "report": "Fundamental analysis offline.", "liquidity_data": liquidity_data_str
     }
 
-    max_retries = 2
-    for attempt in range(max_retries + 1):
-        active_key = nvidia_keys[attempt % len(nvidia_keys)] if nvidia_keys else NVIDIA_API_KEY
-        headers = {
-            "Authorization": f"Bearer {active_key}",
-            "Content-Type": "application/json"
-        }
-        
-        try:
-            print(f"[CLAW] Routing Fundamental Analysis directly to NVIDIA NIM...")
-            response = await asyncio.to_thread(
-                call_nvidia_nim_api,
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                headers,
-                payload
-            )
-            
-            if response.status_code == 200:
-                break
-            elif response.status_code in (502, 503, 429) and attempt < max_retries:
-                if getattr(response, "text", "") in ("Circuit breaker open", "All retries exhausted"):
-                    print("[CLAW] API Circuit breaker is active. Bypassing retries.")
-                    break
-                wait_time = 3 * (attempt + 1)
-                print(f"[CLAW] HTTP {response.status_code} - Retry {attempt+1}/{max_retries} in {wait_time}s...")
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                print(f"[CLAW] HTTP {response.status_code}")
-                pass
-        except Exception as e:
-            if attempt < max_retries:
-                print(f"[CLAW] Error: {e} - Retry {attempt+1}/{max_retries}...")
-                await asyncio.sleep(3)
-                continue
-            print(f"[CLAW] API error: {e}")
+    claw_key = os.getenv("NVIDIA_API_KEY_FUNDAMENTAL") or os.getenv("NVIDIA_API_KEY")
+    
+    print(f"[CLAW] Routing Fundamental Analysis directly to NVIDIA NIM...")
+    response = await call_nvidia_nim_api(payload, claw_key)
 
     if not response or response.status_code != 200:
         print(f"[CLAW] NVIDIA API exhausted. Triggering agent-specific local fallback...")
@@ -551,7 +527,7 @@ def execute_local_fallback(payload: dict) -> requests.Response:
             "max_tokens": 1200,  # FIX #5: 400→1200 — reasoning burns ~300+ tokens before JSON
             "stream": False
         }
-        response = requests.post(LOCAL_LLM_URL, json=fallback_payload, timeout=30)
+        response = requests.post(LOCAL_LLM_URL, json=fallback_payload, timeout=120)
 
         # ── FIX #3: LEVERAGE CLAMP for LM Studio responses ──
         # Local models ignore the user's leverage cap. Hard-clamp here.
@@ -591,34 +567,44 @@ def execute_local_fallback(payload: dict) -> requests.Response:
                 }
         return FakeResponse()
 
-def call_nvidia_nim_api(url: str, headers: dict, payload: dict, max_retries: int = 3) -> requests.Response:
-    """Synchronous NVIDIA API call using requests (runs in thread pool)
+async def call_nvidia_nim_api(payload: dict, api_key: str = None, max_retries: int = 3) -> requests.Response:
+    """Async NVIDIA API call with non-blocking rate limiting.
     Implements retry with exponential backoff on 429 Rate Limit errors.
     Circuit breaker prevents repeated calls when API is down.
 
-    FIX: rate_limit_error_count now RESETS on success. Previously it never
-    reset, causing a permanent 4s+ backoff sleep on every call after a single 429.
-    Timeouts are no longer treated as rate limit errors (they're network issues).
+    FIX (ASYNC CONVERSION): Converted from synchronous def + time.sleep to
+    async def + asyncio.sleep. HTTP requests run via asyncio.to_thread to
+    keep the event loop unblocked. This eliminates the deadlock where 3
+    agents blocked each other through threading.Lock + time.sleep, causing
+    20+ second cascading delays and 429 storms.
     """
-    global last_nvidia_call, rate_limit_error_count, last_rate_limit_time
+    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+    target_key = api_key or os.getenv("NVIDIA_API_KEY")
+    headers = {
+        "Authorization": f"Bearer {target_key}",
+        "Content-Type": "application/json"
+    }
+    
+    state = get_key_state(target_key)
 
     for attempt in range(max_retries):
         current_time = time.time()
 
-        # ── GLOBAL PRE-FLIGHT RATE LIMITER ──
-        # Extract API key from headers for per-key tracking
-        api_key = headers.get("Authorization", "").replace("Bearer ", "").strip()
-        if api_key:
-            _wait_for_nvidia_rate_limit(api_key)
+        # ── GLOBAL PRE-FLIGHT RATE LIMITER (async) ──
+        if target_key:
+            await _wait_for_nvidia_rate_limit(target_key)
         else:
             # Fallback: enforce minimum delay if no key found
-            elapsed = current_time - last_nvidia_call
+            elapsed = current_time - state["last_call"]
             if elapsed < NVIDIA_MIN_GAP:
-                time.sleep(NVIDIA_MIN_GAP - elapsed)
-            last_nvidia_call = time.time()
+                await asyncio.sleep(NVIDIA_MIN_GAP - elapsed)
+            state["last_call"] = time.time()
 
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=25, verify=False)
+            # Run blocking requests.post in thread pool to avoid blocking the event loop
+            response = await asyncio.to_thread(
+                requests.post, url, headers=headers, json=payload, timeout=25, verify=False
+            )
         except requests.exceptions.Timeout:
             print(f"[NVIDIA] Timeout. Bypassing retries...")
             class TimeoutResponse:
@@ -627,21 +613,21 @@ def call_nvidia_nim_api(url: str, headers: dict, payload: dict, max_retries: int
                 def json(self): return {}
             return TimeoutResponse()
 
-        # Handle 429 errors with exponential backoff + jitter
+        # Handle 429 errors with exponential backoff + jitter (non-blocking)
         if response.status_code == 429:
-            rate_limit_error_count += 1
+            state["error_count"] += 1
             import random
-            jitter = random.uniform(0.5, 2.0)  # Random 0.5-2.0s to prevent thundering herd
+            jitter = random.uniform(0.5, 2.0)
             sleep_time = min(15, (2 ** attempt) + jitter)
-            print(f"[NVIDIA] Rate limited (429)! Error count: {rate_limit_error_count}. Retrying in {sleep_time:.1f}s (jitter: {jitter:.1f}s)...")
-            time.sleep(sleep_time)
+            print(f"[NVIDIA] Rate limited (429)! Error count: {state['error_count']}. Retrying in {sleep_time:.1f}s (jitter: {jitter:.1f}s)...")
+            await asyncio.sleep(sleep_time)
             continue
 
         # SUCCESS: Reset backoff state
         if response.status_code == 200:
-            if rate_limit_error_count > 0:
-                print(f"[NVIDIA] Success after {rate_limit_error_count} previous 429 errors — backoff cleared")
-                rate_limit_error_count = 0
+            if state["error_count"] > 0:
+                print(f"[NVIDIA] Success after {state['error_count']} previous 429 errors — backoff cleared")
+                state["error_count"] = 0
             return response
 
         return response
@@ -692,42 +678,10 @@ async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h:
 
     _hold = {"decision": "HOLD", "confidence": 0, "reasoning": ""}
 
-    response = None
-    max_retries = 2
-    for attempt in range(max_retries + 1):
-        active_key = NVIDIA_KEYS[attempt % len(NVIDIA_KEYS)] if NVIDIA_KEYS else nvidia_key
-        rotated_headers = {
-            "Authorization": f"Bearer {active_key}",
-            "Content-Type": "application/json"
-        }
-        key_label = f"Key{(attempt % len(NVIDIA_KEYS)) + 1}" if NVIDIA_KEYS else "Default"
-        try:
-            print(f"[MACRO] Routing Macro Trend Analysis directly to NVIDIA NIM...")
-            response = await asyncio.to_thread(
-                call_nvidia_nim_api,
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                rotated_headers,
-                payload
-            )
-            
-            if response.status_code == 200:
-                break
-            elif response.status_code in (502, 503, 429) and attempt < max_retries:
-                if getattr(response, "text", "") in ("Circuit breaker open", "All retries exhausted"):
-                    return {**_hold, "reasoning": "Circuit breaker active"}
-                wait_time = 3 * (attempt + 1)
-                print(f"[MACRO] HTTP {response.status_code} ({key_label}) - Retry {attempt+1}/{max_retries} in {wait_time}s (switching key)...")
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                print(f"[MACRO] HTTP {response.status_code}: {response.text[:200]}")
-                return {**_hold, "reasoning": f"HTTP error: {response.status_code}"}
-        except Exception as e:
-            if attempt < max_retries:
-                print(f"[MACRO] Error: {e} - Retry {attempt+1}/{max_retries}...")
-                await asyncio.sleep(3)
-                continue
-            print(f"[MACRO] API error: {e}")
+    macro_key = os.getenv("NVIDIA_API_KEY_MACRO") or os.getenv("NVIDIA_API_KEY")
+    
+    print(f"[MACRO] Routing Macro Trend Analysis directly to NVIDIA NIM...")
+    response = await call_nvidia_nim_api(payload, macro_key)
 
     if not response or response.status_code != 200:
         print(f"[MACRO] NVIDIA API exhausted. Triggering agent-specific local fallback...")
@@ -797,42 +751,10 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
         "response_format": {"type": "json_object"}
     }
 
-    response = None
-    max_retries = 2
-    for attempt in range(max_retries + 1):
-        active_key = NVIDIA_KEYS[attempt % len(NVIDIA_KEYS)] if NVIDIA_KEYS else nvidia_key
-        rotated_headers = {
-            "Authorization": f"Bearer {active_key}",
-            "Content-Type": "application/json"
-        }
-        key_label = f"Key{(attempt % len(NVIDIA_KEYS)) + 1}" if NVIDIA_KEYS else "Default"
-        try:
-            print(f"[SCALPER] Executing short-term logic via NVIDIA NIM...")
-            response = await asyncio.to_thread(
-                call_nvidia_nim_api,
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                rotated_headers,
-                payload
-            )
-
-            if response.status_code == 200:
-                break
-            elif response.status_code in (502, 503, 429) and attempt < max_retries:
-                if getattr(response, "text", "") in ("Circuit breaker open", "All retries exhausted"):
-                    return {**_hold, "reasoning": "Circuit breaker active"}
-                wait_time = 3 * (attempt + 1)
-                print(f"[SCALPER] HTTP {response.status_code} ({key_label}) - Retry {attempt+1}/{max_retries} in {wait_time}s (switching key)...")
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                print(f"[SCALPER] HTTP {response.status_code}: {response.text[:200]}")
-                return {**_hold, "reasoning": f"HTTP error: {response.status_code}"}
-        except Exception as e:
-            if attempt < max_retries:
-                print(f"[SCALPER] Error: {e} - Retry {attempt+1}/{max_retries}...")
-                await asyncio.sleep(3)
-                continue
-            print(f"[SCALPER] API error: {e}")
+    scalper_key = os.getenv("NVIDIA_API_KEY_SCALPER") or os.getenv("NVIDIA_API_KEY")
+    
+    print(f"[SCALPER] Executing short-term logic via NVIDIA NIM...")
+    response = await call_nvidia_nim_api(payload, scalper_key)
 
     if not response or response.status_code != 200:
         print(f"[SCALPER] NVIDIA API exhausted. Triggering agent-specific local fallback...")
@@ -875,11 +797,12 @@ def is_aplus_setup(market_data_text: str, trend_bias: dict, live_price: float, s
     3. R:R Ratio: Dynamic TP must be >= 1.5x Dynamic SL.
     4. SMC Proximity: Live price must be within 0.15% of an Institutional OB/FVG.
     """
-    from core.macro_sensors import check_killzones
+    from core.macro_sensors import get_smc_killzone
     
-    # 0. Killzone Check
-    if not check_killzones(timestamp_str):
-        return False, "Price action outside Institutional Killzones."
+    # 0. Killzone Check (strict New York time)
+    kz_active, kz_name = get_smc_killzone()
+    if not kz_active:
+        return False, f"Price action outside Institutional Killzones ({kz_name})."
 
     if live_price <= 0:
         return True, ""  # Skip if live price is unavailable (fallback)
@@ -1366,11 +1289,7 @@ Select the best spread (1-{len(top5)}) or 0 for HOLD."""
                 "response_format": {"type": "json_object"}
             }
 
-            response = await asyncio.to_thread(
-                call_nvidia_nim_api,
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                headers, payload
-            )
+            response = await call_nvidia_nim_api(payload, active_key)
 
             if response.status_code == 200:
                 content = response.json().get("choices", [{}])[0].get("message", {}).get("content", "{}")

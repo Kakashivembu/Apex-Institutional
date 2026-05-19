@@ -147,6 +147,52 @@ backtest_scheduled = False
 server_start_time = time.time()
 BACKTEST_DELAY = 300  # 5 minutes after startup
 
+def calculate_dynamic_lot_size(symbol, current_price, stop_loss_price, account_equity, risk_pct=0.02):
+    """
+    Calculates exact lot size based on a fixed percentage of account equity and distance to Stop Loss.
+    """
+    import MetaTrader5 as mt5
+    
+    # 1. Calculate Dollar Risk (e.g., 2% of $85 = $1.70)
+    dollar_risk = account_equity * risk_pct
+    
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        return 0.01
+        
+    # 2. Calculate Stop Loss distance in Points
+    sl_distance_points = abs(current_price - stop_loss_price) / symbol_info.point
+    
+    # 3. Get Point Value (Tick Value) in USD
+    tick_value = symbol_info.trade_tick_value
+    tick_size = symbol_info.trade_tick_size
+    
+    # If symbol info fails, fallback to micro lot
+    if sl_distance_points == 0 or tick_value == 0 or tick_size == 0:
+        return 0.01
+        
+    point_value = (tick_value / tick_size) * symbol_info.point
+    if point_value == 0:
+        return 0.01
+        
+    # 4. Calculate Raw Lot Size
+    # Formula: Lots = Dollar Risk / (SL Distance in Points * Point Value)
+    raw_lot_size = dollar_risk / (sl_distance_points * point_value)
+    
+    # 5. Clamp to MT5 Broker Limits
+    min_lot = symbol_info.volume_min
+    max_lot = symbol_info.volume_max
+    step_lot = symbol_info.volume_step
+    
+    # Round down to nearest step to stay within risk limits
+    adjusted_lot_size = int(raw_lot_size / step_lot) * step_lot
+    
+    # 6. Safety Net: Hard Widowmaker limit for micro accounts
+    if account_equity < 1000:
+        max_lot = min(max_lot, 0.10)
+        
+    return max(min_lot, min(adjusted_lot_size, max_lot))
+
 # ============================================================
 # NVIDIA NIM API RATE TRACKING
 # ============================================================
@@ -671,12 +717,15 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 print(f"[GATE-1b] BLOCKED: Direction DISAGREEMENT. Action={action} | CLAW={claw_dir} MACRO={macro_decision} SCALPER={scalper_decision}")
                 entry_blocked = True
 
-        # --- GATE 2: Killzone Filter (FIX #4) — London + NY only ---
+        # --- GATE 2: SMC Killzone Filter (NY Time) — London/NY AM/NY PM only ---
         if not entry_blocked:
-            from core.macro_sensors import is_killzone_active
-            if not is_killzone_active():
+            from core.macro_sensors import get_smc_killzone
+            kz_active, kz_name = get_smc_killzone()
+            if not kz_active:
+                import pytz
                 from datetime import datetime as _dt
-                print(f"[GATE-2] BLOCKED: Outside killzone ({_dt.utcnow().strftime('%H:%M')} UTC). London=07-11, NY=13-17.")
+                _ny_now = _dt.now(pytz.utc).astimezone(pytz.timezone('America/New_York'))
+                print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping AI agents. London=2-5AM, NY AM=9:30-11AM, NY PM=1:30-4PM.")
                 entry_blocked = True
 
         # --- GATE 3: HTF Trend Filter (FIX #2) — H1 EMA20 vs EMA50 ---
@@ -828,7 +877,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         risk_pct = base_risk * split_factor
                         
                         max_risk_usd = acct_equity * risk_pct
-                        print(f"[TRADE:{t_account}] Dynamic Margin: Score {abs_score} -> Risk {base_risk*100:.0f}%, Split {active_count+1} -> {risk_pct*100:.2f}% (${max_risk_usd:.2f})")
+                        print(f"[TRADE:{t_account}] Dollar-Based Risk: Score {abs_score} -> Risk {base_risk*100:.0f}%, Split {active_count+1} -> {risk_pct*100:.2f}% (${max_risk_usd:.2f})")
                         
                         symbol_info = await asyncio.to_thread(mt5.symbol_info, symbol)
                         if not symbol_info:
@@ -840,29 +889,6 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                             print(f"[TRADE:{t_account}] Skipping: Could not fetch mark price")
                             return
                             
-                        sl_distance_price = mark_price * (stop_loss_pct / 100.0)
-                        risk_per_lot = sl_distance_price * symbol_info.trade_contract_size
-                        
-                        if risk_per_lot <= 0:
-                            print(f"[TRADE:{t_account}] Risk per lot calculation failed.")
-                            return
-                            
-                        calculated_lot = max_risk_usd / risk_per_lot
-                        min_lot = symbol_info.volume_min
-                        max_lot = symbol_info.volume_max
-                        
-                        if calculated_lot < min_lot:
-                            if acct_equity <= 1000:
-                                print(f"[TRADE:{t_account}] Micro-account override: min lot {min_lot} (calc {calculated_lot:.4f})")
-                                calculated_lot = min_lot
-                            else:
-                                print(f"[TRADE:{t_account}] SL too wide, rejecting. (Lot: {calculated_lot:.4f} < Min: {min_lot})")
-                                return
-                            
-                        step = symbol_info.volume_step
-                        contract_size = round(calculated_lot / step) * step
-                        contract_size = min(max(contract_size, min_lot), max_lot)
-                        
                         tick = symbol_info.point
                         if action == "LONG":
                             sl_price = round(mark_price * (1 - stop_loss_pct/100) / tick) * tick
@@ -872,6 +898,11 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                             sl_price = round(mark_price * (1 + stop_loss_pct/100) / tick) * tick
                             tp_price = round(mark_price * (1 - take_profit_pct/100) / tick) * tick
                             api_side = "short"
+                            
+                        contract_size = await asyncio.to_thread(
+                            calculate_dynamic_lot_size,
+                            symbol, mark_price, sl_price, acct_equity, risk_pct
+                        )
                         
                         print(f"[TRADE:{t_account}] {action} {symbol}: {contract_size} lots @ ${mark_price} (Equity: ${acct_equity:.2f})")
                         print(f"[TRADE:{t_account}] AI Risk: SL={stop_loss_pct}% (${sl_price}) | TP={take_profit_pct}% (${tp_price}) | Lev={ai_leverage}x")

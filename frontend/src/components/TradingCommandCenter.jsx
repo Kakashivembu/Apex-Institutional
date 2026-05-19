@@ -11,31 +11,34 @@ import { API_BASE } from '../lib/api';
 const USDT_TO_INR = 85;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FOREX SESSION ENGINE — Live Asia / London / New York detection (UTC-based)
+// SMC KILLZONE ENGINE — Strict New York Time (EST/EDT)
 // ═══════════════════════════════════════════════════════════════════════════
-const FOREX_SESSIONS = [
-  { id: 'asia',    label: 'Asia',     emoji: '🌏', open: 0,  close: 9,  color: 'purple', gradient: 'from-purple-500 to-indigo-600',  glow: 'rgba(168,85,247,0.6)',  bg: 'purple-500' },
-  { id: 'london',  label: 'London',   emoji: '🇬🇧', open: 7,  close: 16, color: 'cyan',   gradient: 'from-cyan-500 to-blue-600',     glow: 'rgba(6,182,212,0.6)',   bg: 'cyan-500'   },
-  { id: 'newyork', label: 'New York', emoji: '🇺🇸', open: 13, close: 22, color: 'amber',  gradient: 'from-amber-500 to-orange-600',  glow: 'rgba(245,158,11,0.6)', bg: 'amber-500'  },
+const SMC_KILLZONES = [
+  { id: 'london',  label: 'London KZ', emoji: '🇬🇧', open: 2.0,  close: 5.0,  color: 'cyan',   gradient: 'from-cyan-500 to-blue-600',     glow: 'rgba(6,182,212,0.6)',   bg: 'cyan-500'   },
+  { id: 'ny_am',   label: 'NY AM KZ',  emoji: '🇺🇸', open: 9.5,  close: 11.0, color: 'amber',  gradient: 'from-amber-500 to-orange-600',  glow: 'rgba(245,158,11,0.6)', bg: 'amber-500'  },
+  { id: 'ny_pm',   label: 'NY PM KZ',  emoji: '🇺🇸', open: 13.5, close: 16.0, color: 'purple', gradient: 'from-purple-500 to-pink-600',   glow: 'rgba(168,85,247,0.6)', bg: 'purple-500' },
 ];
 
 const getActiveSessions = () => {
+  // Force calculation in pure New York Time
   const now = new Date();
-  const utcH = now.getUTCHours();
-  const utcM = now.getUTCMinutes();
-  const utcDecimal = utcH + utcM / 60;
+  const nyStr = now.toLocaleString("en-US", {timeZone: "America/New_York"});
+  const nyDate = new Date(nyStr);
+  
+  const nyH = nyDate.getHours();
+  const nyM = nyDate.getMinutes();
+  const nyDecimal = nyH + nyM / 60.0;
 
-  const active = FOREX_SESSIONS.filter(s => {
-    if (s.open < s.close) return utcDecimal >= s.open && utcDecimal < s.close;
-    return utcDecimal >= s.open || utcDecimal < s.close; // wraps midnight
+  const active = SMC_KILLZONES.filter(s => {
+    return nyDecimal >= s.open && nyDecimal < s.close;
   });
 
   // Find next session opening
   let nextSession = null;
   let minMinutes = Infinity;
-  for (const s of FOREX_SESSIONS) {
+  for (const s of SMC_KILLZONES) {
     if (active.find(a => a.id === s.id)) continue;
-    let diff = (s.open * 60) - (utcH * 60 + utcM);
+    let diff = (s.open * 60) - (nyH * 60 + nyM);
     if (diff <= 0) diff += 24 * 60;
     if (diff < minMinutes) {
       minMinutes = diff;
@@ -45,24 +48,23 @@ const getActiveSessions = () => {
 
   // Compute progress & time remaining for each active session
   const enriched = active.map(s => {
-    const duration = (s.close > s.open ? s.close - s.open : 24 - s.open + s.close) * 60;
-    let elapsed = (utcH * 60 + utcM) - s.open * 60;
-    if (elapsed < 0) elapsed += 24 * 60;
+    const duration = (s.close - s.open) * 60;
+    let elapsed = (nyH * 60 + nyM) - s.open * 60;
     const remaining = duration - elapsed;
     const progress = Math.min(100, (elapsed / duration) * 100);
     const remH = Math.floor(remaining / 60);
-    const remM = remaining % 60;
+    const remM = Math.floor(remaining % 60);
     return { ...s, progress, remainingStr: `${remH}h ${remM}m`, remainingMin: remaining };
   });
 
   const nextH = nextSession ? Math.floor(minMinutes / 60) : 0;
-  const nextM = nextSession ? minMinutes % 60 : 0;
+  const nextM = nextSession ? Math.floor(minMinutes % 60) : 0;
 
   return {
     active: enriched,
     nextSession,
     nextIn: nextSession ? `${nextH}h ${nextM}m` : null,
-    utcTime: `${String(utcH).padStart(2,'0')}:${String(utcM).padStart(2,'0')}`,
+    nyTime: `${String(nyH).padStart(2,'0')}:${String(nyM).padStart(2,'0')}`,
     isOffMarket: enriched.length === 0,
   };
 };
@@ -324,7 +326,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               </span>
             )) : (
               <span className="px-3 py-1 bg-slate-700/30 text-slate-500 text-xs rounded-full border border-slate-600/30 uppercase font-bold tracking-widest">
-                💤 Off-Market
+                💤 Dead Zone
               </span>
             )}
             {/* FIX #1: Show when AI radar overrides the manual selection */}
@@ -464,7 +466,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">Session Clock</p>
               <div className="flex items-center gap-1.5">
                 <Clock className="w-3 h-3 text-slate-500" />
-                <span className="text-[10px] text-slate-400 font-mono font-bold">{sessionData.utcTime} UTC</span>
+                <span className="text-[10px] text-slate-400 font-mono font-bold">{sessionData.nyTime} NY</span>
               </div>
             </div>
             {sessionData.active.length > 0 ? (
@@ -495,7 +497,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               </div>
             ) : (
               <div className="text-center py-1">
-                <p className="text-lg font-black font-heading text-slate-600">💤 Off-Market</p>
+                <p className="text-lg font-black font-heading text-slate-600">💤 Dead Zone</p>
                 {sessionData.nextSession && (
                   <p className="text-[10px] text-slate-500 mt-1">
                     Next: <span className="text-white font-bold">{sessionData.nextSession.emoji} {sessionData.nextSession.label}</span> in <span className="text-cyan-400 font-bold">{sessionData.nextIn}</span>
