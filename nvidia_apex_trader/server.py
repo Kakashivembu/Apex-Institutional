@@ -69,22 +69,83 @@ from core.mt5_engine import (
 # =============================================================================
 # MT5 CONFIGURATION - Pure MetaTrader 5 Operation
 # =============================================================================
-TARGET_SYMBOLS = [
-    # ── Precious Metals ──
-    "GOLD.i#", "SILVER.i#", "XAUEUR.i#", "XAUJPY.i#", "GAUUSD.i#",
-    # ── Indices ──
-    "US30Cash#", "US100Cash#", "US500Cash#", "JP225Cash#", "GER40Cash#",
-    # ── Energy ──
-    "OILCash#", "BRENTCash#",
-    # ── Crypto ──
-    "BTCUSD#", "ETHUSD#", "BTCJPY#", "XRPUSD#", "ENJUSD#",
-    # ── Forex Majors ──
-    "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#",
-    # ── Forex Crosses ──
-    "EURGBP#", "GBPJPY#", "EURJPY#", "AUDCAD#", "AUDJPY#", "EURAUD#",
-    "GBPCAD#", "EURNZD#", "EURCHF#", "AUDNZD#", "GBPAUD#", "CHFJPY#",
-    "EURCAD#", "CADJPY#", "NZDCAD#", "NZDJPY#",
-]
+# Broker-specific symbol maps — auto-selected based on connected MT5 server
+BROKER_SYMBOL_MAPS = {
+    "xmglobal": [
+        # ── Precious Metals ──
+        "GOLD.i#", "SILVER.i#", "XAUEUR.i#", "XAUJPY.i#", "GAUUSD.i#",
+        # ── Indices ──
+        "US30Cash#", "US100Cash#", "US500Cash#", "JP225Cash#", "GER40Cash#",
+        # ── Energy ──
+        "OILCash#", "BRENTCash#",
+        # ── Crypto ──
+        "BTCUSD#", "ETHUSD#", "BTCJPY#", "XRPUSD#", "ENJUSD#",
+        # ── Forex Majors ──
+        "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#",
+        # ── Forex Crosses ──
+        "EURGBP#", "GBPJPY#", "EURJPY#", "AUDCAD#", "AUDJPY#", "EURAUD#",
+        "GBPCAD#", "EURNZD#", "EURCHF#", "AUDNZD#", "GBPAUD#", "CHFJPY#",
+        "EURCAD#", "CADJPY#", "NZDCAD#", "NZDJPY#",
+    ],
+    "goatfunded": [
+        # ── Precious Metals ──
+        "XAUUSD.x", "XAGUSD.x",
+        # ── Indices ──
+        "US30.x", "NAS100.x", "SPX500.x", "JAP225.x", "GER40.x", "AUS200.x", "UK100.x",
+        # ── Energy ──
+        "WTI.x", "BRENT.x",
+        # ── Crypto ──
+        "BTCUSD.x", "ETHUSD.x", "SOLUSD.x", "LTCUSD.x", "BNBUSD.x", "BCHUSD.x",
+        # ── Forex Majors ──
+        "EURUSD.x", "GBPUSD.x", "USDJPY.x", "AUDUSD.x", "USDCAD.x", "USDCHF.x", "NZDUSD.x",
+        # ── Forex Crosses ──
+        "EURGBP.x", "GBPJPY.x", "EURJPY.x", "AUDCAD.x", "AUDJPY.x", "EURAUD.x",
+        "GBPCAD.x", "EURNZD.x", "EURCHF.x", "AUDNZD.x", "GBPAUD.x", "CHFJPY.x",
+        "EURCAD.x", "CADJPY.x", "NZDCAD.x", "NZDJPY.x",
+        "CADCHF.x", "AUDCHF.x", "GBPCHF.x", "GBPNZD.x", "NZDCHF.x",
+    ],
+}
+
+def detect_broker_from_server(server_name: str) -> str:
+    """Detect broker ID from the MT5 server name string.
+    Extensible: add new brokers by checking substrings."""
+    s = (server_name or "").upper()
+    if "GOAT" in s:
+        return "goatfunded"
+    elif "XM" in s:
+        return "xmglobal"
+    elif "ICMARKET" in s:
+        return "xmglobal"  # ICMarkets uses similar naming — extend when needed
+    elif "FTMO" in s:
+        return "xmglobal"  # FTMO uses similar naming — extend when needed
+    return "xmglobal"  # Safe default
+
+_current_broker_id = "xmglobal"
+
+def reload_target_symbols():
+    """Re-detect broker from active MT5 account and update TARGET_SYMBOLS.
+    Called at the start of each fleet scan cycle for instant hot-swap."""
+    global TARGET_SYMBOLS, _current_broker_id
+    active_keys = key_manager.get_active_keys()
+    if active_keys:
+        server = active_keys[0].get("network", "")
+        broker_id = detect_broker_from_server(server)
+        new_symbols = BROKER_SYMBOL_MAPS.get(broker_id, BROKER_SYMBOL_MAPS["xmglobal"])
+        if broker_id != _current_broker_id:
+            print(f"[FLEET] *** BROKER SWITCH DETECTED: {_current_broker_id} -> {broker_id} ***")
+            print(f"[FLEET] Loading {len(new_symbols)} symbols for {broker_id} (server: {server})")
+            # Clear the symbol resolution cache so stale mappings don't persist
+            from core.mt5_engine import _symbol_resolution_cache
+            _symbol_resolution_cache.clear()
+            _current_broker_id = broker_id
+        TARGET_SYMBOLS = new_symbols
+    else:
+        TARGET_SYMBOLS = BROKER_SYMBOL_MAPS["xmglobal"]
+
+# Initialize TARGET_SYMBOLS from the active account at startup
+TARGET_SYMBOLS = BROKER_SYMBOL_MAPS["xmglobal"]  # Default until first reload
+reload_target_symbols()
+
 FLEET_SCAN_DELAY = 5
 FLEET_INTER_SYMBOL_DELAY = 1.5  # Throttle between symbol scans to prevent API/VRAM overload
 MAX_OPEN_POSITIONS = 999
@@ -1839,6 +1900,7 @@ async def market_data_loop():
         market_data = None  # Reset each cycle
         try:
             print("\n[SYSTEM] Initiating new Fleet Scan Cycle...")
+            reload_target_symbols()  # Auto-detect broker and load correct symbol catalogue
             active_keys = key_manager.get_active_keys()
             
             # Unconditionally fetch account state so UI never shows $0
@@ -2292,6 +2354,20 @@ async def health_check():
         "trading_enabled": trading_enabled,
         "dry_run": exchange.DRY_RUN,
         "trade_count": len(trade_log)
+    }
+
+@app.get("/api/fleet-symbols")
+async def get_fleet_symbols():
+    """Return the active broker's symbol catalogue and detection info."""
+    active_keys = key_manager.get_active_keys()
+    server = active_keys[0].get("network", "") if active_keys else ""
+    broker_id = detect_broker_from_server(server)
+    return {
+        "broker": broker_id,
+        "server": server,
+        "symbols": TARGET_SYMBOLS,
+        "count": len(TARGET_SYMBOLS),
+        "available_brokers": list(BROKER_SYMBOL_MAPS.keys()),
     }
 
 @app.get("/api/network-info")

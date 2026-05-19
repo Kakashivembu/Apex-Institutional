@@ -19,6 +19,10 @@ ccxt_async = None  # Sentinel; replaced at runtime if ccxt is available
 def fetch_candles_sync(symbol, resolution, limit=1000, network="mainnet"):
     """Fetch candles from MT5 IPC. Legacy Delta Exchange routing removed."""
     import MetaTrader5 as mt5
+    from core.mt5_engine import _resolve_tradeable_symbol
+
+    # Resolve broker-specific symbol name (e.g., GOLD.i# -> XAUUSD.x on GoatFunded)
+    symbol = _resolve_tradeable_symbol(symbol)
 
     res_map = {
         "1m": mt5.TIMEFRAME_M1,
@@ -282,6 +286,8 @@ def fetch_dom_imbalance_sync(symbol: str = "GOLD") -> str:
     Uses mt5.market_book_get() for L2 data. Falls back to symbol_info
     if DOM is unavailable. Returns graceful default if MT5 IPC fails.
     """
+    from core.mt5_engine import _resolve_tradeable_symbol
+    symbol = _resolve_tradeable_symbol(symbol)
     try:
         if not mt5.symbol_select(symbol, True):
             pass

@@ -9,14 +9,34 @@ logger = logging.getLogger("MT5_Engine")
 logger.setLevel(logging.INFO)
 _symbol_resolution_cache = {}
 
+# Cross-broker base-name aliases: maps XMGlobal-style names to standard names
+# so fuzzy matching works regardless of which broker is connected.
+_BASE_NAME_ALIASES = {
+    "GOLD": "XAUUSD",
+    "SILVER": "XAGUSD",
+    "XAUEUR": "XAUUSD",   # Fallback if XAUEUR not available
+    "XAUJPY": "XAUUSD",   # Fallback if XAUJPY not available
+    "GAUUSD": "XAUUSD",   # Galliano gold alias
+    "US30CASH": "US30",
+    "US100CASH": "NAS100",
+    "US500CASH": "SPX500",
+    "JP225CASH": "JAP225",
+    "GER40CASH": "GER40",
+    "OILCASH": "WTI",
+    "BRENTCASH": "BRENT",
+    "DJ30": "US30",
+}
+
 def _resolve_tradeable_symbol(requested_symbol: str) -> str:
     """
     Robust symbol resolver - Maps requested symbols to the correct broker suffix.
+    Supports multiple brokers (XMGlobal, GoatFunded, etc.) via suffix probing
+    and base-name aliasing.
     Returns the exact symbol if it exists in MT5.
     """
     requested = (requested_symbol or "").strip()
     if not requested:
-        requested = "GOLD.i#"
+        requested = "XAUUSD.x"
 
     cached = _symbol_resolution_cache.get(requested)
     if cached:
@@ -31,7 +51,6 @@ def _resolve_tradeable_symbol(requested_symbol: str) -> str:
         return requested
 
     all_symbols_raw = mt5.symbols_get() or []
-    all_symbols = [s.name for s in all_symbols_raw]
     symbol_by_upper = {s.name.upper(): s.name for s in all_symbols_raw}
 
     case_match = symbol_by_upper.get(requested.upper())
@@ -42,21 +61,28 @@ def _resolve_tradeable_symbol(requested_symbol: str) -> str:
         _symbol_resolution_cache[requested] = case_match
         return case_match
 
-    # 2. Try fuzzy matching (handle suffix differences like #, .i#, etc.)
-    base_symbol = requested.upper().replace(".I#", "").replace("#", "").replace(".I", "")
-    
-    # Preferred suffixes for this broker based on GOLD.i# and USDJPY#
-    preferred_suffixes = ["#", ".i#", "i", ".c", ".pro", ""]
-    
-    for suffix in preferred_suffixes:
-        test_sym = base_symbol + suffix
-        matched_sym = symbol_by_upper.get(test_sym.upper())
-        if matched_sym:
-            logger.info(f"Fuzzy matched '{requested}' to '{matched_sym}'")
-            if not mt5.symbol_info(matched_sym).visible:
-                mt5.symbol_select(matched_sym, True)
-            _symbol_resolution_cache[requested] = matched_sym
-            return matched_sym
+    # 2. Strip all known suffixes to get the base symbol
+    base_symbol = requested.upper().replace(".I#", "").replace("#", "").replace(".I", "").replace(".X", "")
+
+    # 3. Check cross-broker aliases (e.g., GOLD -> XAUUSD, US30CASH -> US30)
+    base_candidates = [base_symbol]
+    alias = _BASE_NAME_ALIASES.get(base_symbol)
+    if alias:
+        base_candidates.append(alias)
+
+    # 4. Preferred suffixes — ordered by most common broker conventions
+    preferred_suffixes = [".x", "#", ".i#", "i", ".c", ".pro", ""]
+
+    for base in base_candidates:
+        for suffix in preferred_suffixes:
+            test_sym = base + suffix
+            matched_sym = symbol_by_upper.get(test_sym.upper())
+            if matched_sym:
+                logger.info(f"Fuzzy matched '{requested}' to '{matched_sym}' (base: {base}, suffix: {suffix})")
+                if not mt5.symbol_info(matched_sym).visible:
+                    mt5.symbol_select(matched_sym, True)
+                _symbol_resolution_cache[requested] = matched_sym
+                return matched_sym
 
     # Fallback: return as-is (callers handle missing tick safely)
     logger.warning(f"Symbol '{requested}' not found in MT5 Market Watch. Using as-is.")
@@ -152,6 +178,8 @@ async def execute_mt5_order(symbol: str, side: str, lot_size: float, sl: float =
     """
     Executes a market order on MT5.
     """
+    # Resolve broker-specific symbol name (e.g., GOLD.i# -> XAUUSD.x on GoatFunded)
+    symbol = _resolve_tradeable_symbol(symbol)
     account_info = mt5.account_info()
     if account_info is None:
         error = mt5.last_error()
@@ -269,6 +297,9 @@ async def close_mt5_position(ticket: int, symbol: str = None, volume: float = No
         symbol = symbol or pos.symbol
         volume = volume or pos.volume
         side = side or ("long" if pos.type == mt5.ORDER_TYPE_BUY else "short")
+    
+    # Resolve broker-specific symbol name
+    symbol = _resolve_tradeable_symbol(symbol)
     
     # Close = opposite direction
     close_is_buy = (side == "short")
