@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import MetaTrader5 as mt5
 
 logger = logging.getLogger("Macro_Sensors")
@@ -10,7 +10,7 @@ logger.setLevel(logging.INFO)
 
 def detect_fair_value_gaps(candles: list, current_price: float = 0.0, max_lookback: int = 100) -> dict:
     """
-    Detects Fair Value Gaps (FVGs) — 3-candle imbalance patterns used by institutional traders.
+    Detects Fair Value Gaps (FVGs) â€” 3-candle imbalance patterns used by institutional traders.
 
     Bullish FVG: Candle 1 High < Candle 3 Low  (price left a vacuum below, expecting return)
     Bearish FVG: Candle 1 Low > Candle 3 High  (price left a vacuum above, expecting return)
@@ -114,7 +114,7 @@ def detect_fair_value_gaps(candles: list, current_price: float = 0.0, max_lookba
 
 def detect_order_blocks(candles: list, current_price: float = 0.0, max_lookback: int = 100) -> dict:
     """
-    Detects Order Blocks (OBs) — institutional supply/demand zones.
+    Detects Order Blocks (OBs) â€” institutional supply/demand zones.
 
     Bullish OB: The last bearish candle (close < open) immediately before a strong
                 impulsive bullish move that breaks structure (creates a new local high).
@@ -278,29 +278,50 @@ async def calculate_currency_matrix() -> dict:
     """
     Fetches 4H and 1H price changes for major pairs to calculate a relative strength score (0-100)
     for the base currencies (USD, EUR, GBP, JPY, XAU). Returns Strongest and Weakest.
-    """
-    base_symbols = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "XAUUSD"]
-    symbols = []
     
-    for base in base_symbols:
-        found = False
-        for suffix in ["", ".x", ".i", "m", ".pro", "c", "p", ".a", "-a", "x", ".i#"]:
-            sym = base + suffix
-            info = mt5.symbol_info(sym)
-            if info is not None:
-                symbols.append(sym)
-                found = True
-                break
-        if not found and base == "XAUUSD":
-            for alt in ["GOLD", "GOLD.i#", "GOLD.x", "GOLD.pro", "GOLDm"]:
-                info = mt5.symbol_info(alt)
-                if info is not None:
-                    symbols.append(alt)
-                    break
+    Broker-agnostic: dynamically resolves symbol suffixes (.x, #, .i#, bare) for
+    each pair so it works across XMGlobal, GoatFunded, and other prop firm accounts.
+    """
+    from core.mt5_engine import _resolve_tradeable_symbol
 
+    # --- Resolve forex pairs via the existing broker-agnostic resolver ---
+    base_forex = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
+    resolved_symbols = []
+    for base in base_forex:
+        resolved = _resolve_tradeable_symbol(base)
+        info = mt5.symbol_info(resolved)
+        if info is not None:
+            if not info.visible:
+                mt5.symbol_select(resolved, True)
+            resolved_symbols.append(resolved)
+        else:
+            logger.warning(f"[MATRIX] Could not resolve forex pair: {base} (tried {resolved})")
+
+    # --- Resolve Gold via alias probing (broker naming varies wildly) ---
+    gold_aliases = ["XAUUSD", "XAUUSD.x", "GOLD", "GOLD.x", "GOLD.i#", "GOLD#", "XAUUSD#", "XAUUSD.i#"]
+    gold_symbol = None
+    for alias in gold_aliases:
+        info = mt5.symbol_info(alias)
+        if info is not None:
+            if not info.visible:
+                mt5.symbol_select(alias, True)
+            gold_symbol = alias
+            break
+    if gold_symbol:
+        resolved_symbols.append(gold_symbol)
+    else:
+        # Last resort: try the generic resolver
+        fallback = _resolve_tradeable_symbol("XAUUSD")
+        if mt5.symbol_info(fallback) is not None:
+            resolved_symbols.append(fallback)
+            gold_symbol = fallback
+        else:
+            logger.warning("[MATRIX] Could not resolve any Gold symbol for currency matrix")
+
+    logger.info(f"[MATRIX] Resolved symbols: {resolved_symbols}")
     matrix = {}
     
-    for sym in symbols:
+    for sym in resolved_symbols:
         # Fetch last 2 candles for 4H and 1H
         rates_h4 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_H4, 0, 2)
         rates_h1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_H1, 0, 2)
@@ -323,11 +344,14 @@ async def calculate_currency_matrix() -> dict:
     # We weight H4 more heavily than H1
     for sym, changes in matrix.items():
         total_change = (changes["H4"] * 0.7) + (changes["H1"] * 0.3)
-        if sym.startswith("GOLD") or sym.startswith("XAU"):
+        # Strip broker suffixes to extract clean base/quote currencies
+        clean = sym.upper().replace(".X", "").replace(".I#", "").replace("#", "").replace(".I", "").replace(".PRO", "").replace(".C", "")
+        # Gold/XAU detection (broker names: GOLD, XAUUSD, GOLD.x, XAUUSD.i#, etc.)
+        if clean.startswith("GOLD") or clean.startswith("XAU"):
             base, quote = "XAU", "USD"
         else:
-            base = sym[:3]
-            quote = sym[3:6]
+            base = clean[:3]
+            quote = clean[3:6]  # Limit to 3 chars to avoid residual suffix chars
         
         if quote == "USD":
             # Direct pair (EURUSD, GBPUSD, AUDUSD, GOLD)
@@ -405,49 +429,41 @@ async def detect_tick_velocity(symbol: str) -> dict:
         "ma_vol": round(float(ma_vol), 2)
     }
 
-def check_killzones(timestamp_str: str = "", broker_offset: int = 0) -> bool:
+def get_smc_killzone() -> tuple:
     """
-    Checks if the given timestamp falls within high-probability institutional
-    trading windows (NO Asian session — low liquidity causes bad fills):
-    - London Killzone: 07:00 - 11:00 UTC
-    - New York Killzone: 13:00 - 17:00 UTC
-    
-    If timestamp_str is empty (live mode), uses datetime.utcnow().
+    Full London + New York trading-session gate using New York time.
+
+    Active window:
+      - 2:00 AM to 5:00 PM NY Time, continuous.
+
+    This keeps the engine awake through full London, London/New York overlap,
+    NY lunch, and full New York instead of only narrow killzone slices.
     """
+    import pytz
     from datetime import datetime
-    
-    if not timestamp_str:
-        now = datetime.utcnow()
-        hour = now.hour
-    else:
-        try:
-            dt = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M")
-            hour = dt.hour
-        except ValueError:
-            try:
-                dt = datetime.fromisoformat(timestamp_str)
-                hour = dt.hour
-            except ValueError:
-                return True
 
-    adjusted_hour = (hour + broker_offset) % 24
-    
-    # TIGHTENED: London + NY only. Asian session REMOVED to prevent low-liquidity entries.
-    LONDON_OPEN = 7
-    LONDON_CLOSE = 11
-    NY_OPEN = 13
-    NY_CLOSE = 17
+    ny_tz = pytz.timezone('America/New_York')
+    ny_time = datetime.now(pytz.utc).astimezone(ny_tz)
+    current_time_float = ny_time.hour + (ny_time.minute / 60.0)
 
-    in_london = LONDON_OPEN <= adjusted_hour <= LONDON_CLOSE
-    in_ny = NY_OPEN <= adjusted_hour <= NY_CLOSE
+    if 2.0 <= current_time_float < 8.0:
+        return True, "London Session"
+    if 8.0 <= current_time_float < 12.0:
+        return True, "London/NY Overlap"
+    if 12.0 <= current_time_float < 17.0:
+        return True, "New York Session"
 
-    return in_london or in_ny
+    return False, "Outside London/New York Session"
 
 
 def is_killzone_active() -> bool:
-    """Convenience function: returns True if current UTC time is within London or NY killzone.
-    Called before every new entry attempt. Trailing/management of open trades is always allowed."""
-    return check_killzones("")
+    """
+    Convenience wrapper for the Gatekeeper.
+    Returns True ONLY if a valid SMC Killzone is active.
+    Called before every new entry attempt. Trailing/management of open trades is always allowed.
+    """
+    is_active, _ = get_smc_killzone()
+    return is_active
 
 def detect_asian_range(candles: list, current_price: float) -> str:
     """
@@ -519,13 +535,13 @@ def detect_asian_range(candles: list, current_price: float) -> str:
 
 
 # =============================================================================
-# HTF TREND BIAS GATE — H1 EMA20 vs EMA50 (mandatory pre-entry filter)
+# HTF TREND BIAS GATE â€” H1 EMA20 vs EMA50 (mandatory pre-entry filter)
 # =============================================================================
 
 def get_h1_trend_bias(symbol: str) -> dict:
     """
     Fetches H1 EMA20 and EMA50 from MT5 to determine mandatory trade direction.
-    This is a HARD GATE — not a weighted suggestion.
+    This is a HARD GATE â€” not a weighted suggestion.
     
     Returns:
         {"bias": "BUY"|"SELL"|"SKIP", "ema20": float, "ema50": float, "gap_pct": float}
@@ -577,7 +593,7 @@ def get_h1_trend_bias(symbol: str) -> dict:
 
 
 # =============================================================================
-# MOMENTUM CONFIRMATION — M15 candle direction check (pre-entry filter)
+# MOMENTUM CONFIRMATION â€” M15 candle direction check (pre-entry filter)
 # =============================================================================
 
 def is_momentum_confirmed(symbol: str, direction: str) -> bool:
@@ -619,19 +635,20 @@ def is_momentum_confirmed(symbol: str, direction: str) -> bool:
             candle_confirms = last_close < last_open
         
         if not candle_confirms:
-            print(f"[MOMENTUM] {symbol}: Last M15 candle does NOT confirm {direction.upper()} — BLOCKED")
+            print(f"[MOMENTUM] {symbol}: Last M15 candle does NOT confirm {direction.upper()} â€” BLOCKED")
             return False
         
         if prev_body_size > 0 and prev_body_bot < current_price < prev_body_top:
             depth = min(current_price - prev_body_bot, prev_body_top - current_price)
             penetration = depth / prev_body_size
             if penetration > 0.5:
-                print(f"[MOMENTUM] {symbol}: Price mid-candle ({penetration:.0%} into prev body) — BLOCKED")
+                print(f"[MOMENTUM] {symbol}: Price mid-candle ({penetration:.0%} into prev body) â€” BLOCKED")
                 return False
         
-        print(f"[MOMENTUM] {symbol}: {direction.upper()} confirmed by M15 structure ✓")
+        print(f"[MOMENTUM] {symbol}: {direction.upper()} confirmed by M15 structure âœ“")
         return True
     
     except Exception as e:
         print(f"[MOMENTUM] Error checking {symbol}: {e}")
         return False
+

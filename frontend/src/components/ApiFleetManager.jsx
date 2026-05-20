@@ -33,6 +33,10 @@ const MT5_SERVERS = [
   'XMGlobal-MT5 16',
   'XMGlobal-MT5 17',
   'XMGlobal-MT5 18',
+  // GoatFunded
+  'GoatFunded-Server',
+  'GoatFunded-Server2',
+  'GoatFunded-Server3',
   // ICMarkets
   'ICMarketsSC-MT5-2',
   'ICMarketsSC-MT5-4',

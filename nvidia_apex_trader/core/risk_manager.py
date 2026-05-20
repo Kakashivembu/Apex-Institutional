@@ -10,8 +10,13 @@ import asyncio
 # =============================================================================
 # CIRCUIT BREAKER CONFIGURATION
 # =============================================================================
-REALIZED_DRAWDOWN_LIMIT = 0.05   # 5% max REALIZED daily loss (closed trades)
-FLOATING_EMERGENCY_LIMIT = 0.20  # 20% max FLOATING drawdown (open trade emergency / margin-call shield)
+REALIZED_DRAWDOWN_LIMIT = 0.05   # 5% max REALIZED daily loss (default)
+FLOATING_EMERGENCY_LIMIT = 0.20  # 20% max FLOATING drawdown (default)
+
+def update_drawdown_limits(daily_dd_pct: float):
+    """Dynamically updates the circuit breaker limits from saved parameters."""
+    global REALIZED_DRAWDOWN_LIMIT
+    REALIZED_DRAWDOWN_LIMIT = daily_dd_pct / 100.0
 
 # Global state (module-level singleton)
 _circuit_state = {

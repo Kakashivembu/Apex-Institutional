@@ -4,7 +4,9 @@ import { API_BASE } from '../lib/api';
 
 const FOREX_DEFAULTS = {
   mode: 'forex',
-  max_risk_pct: 2,
+  max_risk_pct: 2.0,
+  max_daily_drawdown_pct: 3.0,
+  max_trade_drawdown_pct: 2.0,
   base_take_profit_pct: 0.3,
   base_stop_loss_pct: 0.15,
   max_leverage: 10,
@@ -18,6 +20,8 @@ const FOREX_DEFAULTS = {
 const CRYPTO_DEFAULTS = {
   mode: 'crypto',
   max_risk_pct: 10,
+  max_daily_drawdown_pct: 10.0,
+  max_trade_drawdown_pct: 3.0,
   base_take_profit_pct: 6,
   base_stop_loss_pct: 3,
   max_leverage: 20,
@@ -85,6 +89,8 @@ const SystemParameters = ({ wsConnected }) => {
   // ── Slider configs per mode ──
   const sliderConfig = {
     max_risk_pct:        isForex ? { min: 0.5, max: 10, step: 0.5 } : { min: 1, max: 50, step: 1 },
+    max_daily_drawdown_pct: { min: 1, max: 20, step: 0.5 },
+    max_trade_drawdown_pct: { min: 0.5, max: 10, step: 0.5 },
     base_take_profit_pct: isForex ? { min: 0.05, max: 1, step: 0.05 } : { min: 1, max: 50, step: 1 },
     base_stop_loss_pct:   isForex ? { min: 0.05, max: 0.5, step: 0.01 } : { min: 1, max: 20, step: 0.5 },
     max_leverage:        { min: 1, max: 100, step: 1 },
@@ -288,7 +294,7 @@ const SystemParameters = ({ wsConnected }) => {
               {/* Max Risk % */}
               <div>
                 <div className="flex justify-between mb-2">
-                  <label className="text-sm text-slate-400">Max Risk %</label>
+                  <label className="text-sm text-slate-400">Total Max Risk %</label>
                   <span className={`font-bold ${params.max_risk_pct > (isForex ? 5 : 25) ? 'text-rose-400' : 'text-cyan-400'}`}>
                     {params.max_risk_pct}%
                   </span>
@@ -296,12 +302,36 @@ const SystemParameters = ({ wsConnected }) => {
                 <input type="range" name="max_risk_pct" value={params.max_risk_pct} onChange={handleSliderChange}
                   min={sc.max_risk_pct.min} max={sc.max_risk_pct.max} step={sc.max_risk_pct.step}
                   className="w-full h-2 bg-black/40 rounded-full appearance-none cursor-pointer accent-cyan-500" />
-                <p className="text-xs text-slate-500 mt-1">Maximum risk per trade (default: {isForex ? '2%' : '10%'})</p>
+                <p className="text-xs text-slate-500 mt-1">Maximum risk per signal block (default: {isForex ? '2%' : '10%'})</p>
                 {params.max_risk_pct > (isForex ? 5 : 25) && (
                   <p className="text-xs text-rose-400 mt-1 flex items-center gap-1.5 font-bold">
-                    <AlertTriangle className="w-3.5 h-3.5" /> ⚠️ High risk per trade — capital exposure elevated
+                    <AlertTriangle className="w-3.5 h-3.5" /> ⚠️ High total risk — capital exposure elevated
                   </p>
                 )}
+              </div>
+
+              {/* Max Daily Drawdown % */}
+              <div>
+                <div className="flex justify-between mb-2">
+                  <label className="text-sm text-slate-400">Max Daily Drawdown % (Circuit Breaker)</label>
+                  <span className="text-rose-400 font-bold">{params.max_daily_drawdown_pct}%</span>
+                </div>
+                <input type="range" name="max_daily_drawdown_pct" value={params.max_daily_drawdown_pct} onChange={handleSliderChange}
+                  min={sc.max_daily_drawdown_pct.min} max={sc.max_daily_drawdown_pct.max} step={sc.max_daily_drawdown_pct.step}
+                  className="w-full h-2 bg-black/40 rounded-full appearance-none cursor-pointer accent-rose-500" />
+                <p className="text-xs text-slate-500 mt-1">Stops all trading if daily loss reaches this limit (default: 3.0%)</p>
+              </div>
+
+              {/* Max Drawdown Per Trade % */}
+              <div>
+                <div className="flex justify-between mb-2">
+                  <label className="text-sm text-slate-400">Max Drawdown Per Trade %</label>
+                  <span className="text-rose-400 font-bold">{params.max_trade_drawdown_pct}%</span>
+                </div>
+                <input type="range" name="max_trade_drawdown_pct" value={params.max_trade_drawdown_pct} onChange={handleSliderChange}
+                  min={sc.max_trade_drawdown_pct.min} max={sc.max_trade_drawdown_pct.max} step={sc.max_trade_drawdown_pct.step}
+                  className="w-full h-2 bg-black/40 rounded-full appearance-none cursor-pointer accent-rose-500" />
+                <p className="text-xs text-slate-500 mt-1">Hard cap on SL distance per individual position (default: 2.0%)</p>
               </div>
 
               {/* Base Take Profit % */}

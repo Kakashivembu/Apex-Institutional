@@ -418,6 +418,10 @@ async def get_mt5_closed_trades(lookback_days: int = 365, account_name: str = "X
     Uses lookback_days=365 (ALL history) and date_to = now + 1 day to guarantee
     today's latest deals are always captured regardless of timezone offset.
     """
+    # Guard against uninitialized MT5 connection
+    if mt5.terminal_info() is None:
+        return []
+        
     date_to = datetime.now() + timedelta(days=1)  # +1 day to capture ALL of today's deals
     date_from = date_to - timedelta(days=lookback_days + 1)
     deals = mt5.history_deals_get(date_from, date_to)
