@@ -10,7 +10,7 @@ logger.setLevel(logging.INFO)
 
 def detect_fair_value_gaps(candles: list, current_price: float = 0.0, max_lookback: int = 100) -> dict:
     """
-    Detects Fair Value Gaps (FVGs) — 3-candle imbalance patterns used by institutional traders.
+    Detects Fair Value Gaps (FVGs) â€” 3-candle imbalance patterns used by institutional traders.
 
     Bullish FVG: Candle 1 High < Candle 3 Low  (price left a vacuum below, expecting return)
     Bearish FVG: Candle 1 Low > Candle 3 High  (price left a vacuum above, expecting return)
@@ -114,7 +114,7 @@ def detect_fair_value_gaps(candles: list, current_price: float = 0.0, max_lookba
 
 def detect_order_blocks(candles: list, current_price: float = 0.0, max_lookback: int = 100) -> dict:
     """
-    Detects Order Blocks (OBs) — institutional supply/demand zones.
+    Detects Order Blocks (OBs) â€” institutional supply/demand zones.
 
     Bullish OB: The last bearish candle (close < open) immediately before a strong
                 impulsive bullish move that breaks structure (creates a new local high).
@@ -431,42 +431,30 @@ async def detect_tick_velocity(symbol: str) -> dict:
 
 def get_smc_killzone() -> tuple:
     """
-    Checks if the current time falls within high-probability SMC Killzones
-    based strictly on New York time (EST/EDT), making it immune to local/broker offsets.
-    
-    Killzones:
-      - London Killzone:  2:00 AM – 5:00 AM  NY Time
-      - NY AM Killzone:   9:30 AM – 11:00 AM NY Time  (Silver Bullet window)
-      - NY PM Killzone:   1:30 PM – 4:00 PM  NY Time
-    
-    Dead Zones (BLOCKED):
-      - Asian Session, NY Lunch (11:00–13:30), NY/London Gap (5:00–9:30)
-    
-    Returns:
-        (bool, str): (is_active, zone_name)
+    Full London + New York trading-session gate using New York time.
+
+    Active window:
+      - 2:00 AM to 5:00 PM NY Time, continuous.
+
+    This keeps the engine awake through full London, London/New York overlap,
+    NY lunch, and full New York instead of only narrow killzone slices.
     """
     import pytz
     from datetime import datetime
 
-    # Force calculation in pure New York Time — immune to broker/server UTC offsets
     ny_tz = pytz.timezone('America/New_York')
     ny_time = datetime.now(pytz.utc).astimezone(ny_tz)
     current_time_float = ny_time.hour + (ny_time.minute / 60.0)
 
-    # Zone 1: London Killzone (2:00 AM to 5:00 AM NY Time)
-    if 2.0 <= current_time_float < 5.0:
-        return True, "London Killzone"
+    # 05:27 NY is tradable: London continuation remains active until 08:00 NY.
+    if 2.0 <= current_time_float < 8.0:
+        return True, "London Session"
+    if 8.0 <= current_time_float < 12.0:
+        return True, "London/NY Overlap"
+    if 12.0 <= current_time_float < 17.0:
+        return True, "New York Session"
 
-    # Zone 2: NY AM Killzone & Silver Bullet (9:30 AM to 11:00 AM NY Time)
-    if 9.5 <= current_time_float < 11.0:
-        return True, "NY AM Killzone"
-
-    # Zone 3: NY PM Killzone (1:30 PM to 4:00 PM NY Time)
-    if 13.5 <= current_time_float < 16.0:
-        return True, "NY PM Killzone"
-
-    # All other times (Asian, NY Lunch, NY/London gap)
-    return False, "Dead Zone"
+    return False, "Outside London/New York Session"
 
 
 def is_killzone_active() -> bool:
@@ -548,13 +536,13 @@ def detect_asian_range(candles: list, current_price: float) -> str:
 
 
 # =============================================================================
-# HTF TREND BIAS GATE — H1 EMA20 vs EMA50 (mandatory pre-entry filter)
+# HTF TREND BIAS GATE â€” H1 EMA20 vs EMA50 (mandatory pre-entry filter)
 # =============================================================================
 
 def get_h1_trend_bias(symbol: str) -> dict:
     """
     Fetches H1 EMA20 and EMA50 from MT5 to determine mandatory trade direction.
-    This is a HARD GATE — not a weighted suggestion.
+    This is a HARD GATE â€” not a weighted suggestion.
     
     Returns:
         {"bias": "BUY"|"SELL"|"SKIP", "ema20": float, "ema50": float, "gap_pct": float}
@@ -605,8 +593,88 @@ def get_h1_trend_bias(symbol: str) -> dict:
         return {"bias": "SKIP", "ema20": 0, "ema50": 0, "gap_pct": 0, "reason": f"Error: {e}"}
 
 
+
+def get_early_trend_continuation(symbol: str, direction: str) -> dict:
+    """Detect the green-circle entry: pullback/retest then first continuation candle.
+
+    This intentionally rejects late momentum after several same-direction M15
+    candles. It is used before live execution so the bot enters near the start of
+    the leg instead of buying/selling the exhausted candle.
+    """
+    try:
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return {"pass": False, "reason": "Symbol not found"}
+        if not info.visible:
+            mt5.symbol_select(symbol, True)
+
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 9)
+        if rates is None or len(rates) < 7:
+            return {"pass": False, "reason": "Insufficient M15 data"}
+
+        current_price = float(info.ask if direction.upper() in ("BUY", "LONG") else info.bid)
+        is_buy = direction.upper() in ("BUY", "LONG")
+        closed = list(rates[:-1])  # keep existing convention: final bar is forming
+        last = closed[-1]
+        prior = closed[-6:-1]
+        recent_pullback = closed[-4:-1]
+
+        def o(c): return float(c['open'])
+        def h(c): return float(c['high'])
+        def l(c): return float(c['low'])
+        def c(candle): return float(candle['close'])
+        def body(candle): return abs(c(candle) - o(candle))
+        def rng(candle): return max(h(candle) - l(candle), 0.0)
+
+        atr = sum(rng(x) for x in closed[-7:]) / max(1, len(closed[-7:]))
+        if atr <= 0:
+            return {"pass": False, "reason": "M15 ATR unavailable"}
+
+        if is_buy:
+            continuation = c(last) > o(last) and c(last) >= c(closed[-2])
+            pullback_seen = any(c(x) < o(x) for x in recent_pullback)
+            retest_low = min(l(x) for x in recent_pullback)
+            leg_extension = current_price - retest_low
+            consecutive = 0
+            for bar in reversed(closed[-5:]):
+                if c(bar) > o(bar):
+                    consecutive += 1
+                else:
+                    break
+            broke_retest = c(last) > max(o(closed[-2]), c(closed[-2])) or h(last) > h(closed[-2])
+        else:
+            continuation = c(last) < o(last) and c(last) <= c(closed[-2])
+            pullback_seen = any(c(x) > o(x) for x in recent_pullback)
+            retest_high = max(h(x) for x in recent_pullback)
+            leg_extension = retest_high - current_price
+            consecutive = 0
+            for bar in reversed(closed[-5:]):
+                if c(bar) < o(bar):
+                    consecutive += 1
+                else:
+                    break
+            broke_retest = c(last) < min(o(closed[-2]), c(closed[-2])) or l(last) < l(closed[-2])
+
+        if not continuation:
+            return {"pass": False, "reason": "No first continuation M15 candle yet"}
+        if not pullback_seen:
+            return {"pass": False, "reason": "No pullback/retest before continuation"}
+        if not broke_retest:
+            return {"pass": False, "reason": "Continuation has not broken the pullback candle yet"}
+        if consecutive > 2:
+            return {"pass": False, "reason": f"Late chase: {consecutive} M15 candles already in same direction"}
+        if leg_extension > atr * 2.2:
+            return {"pass": False, "reason": f"Late chase: current leg is {leg_extension/atr:.1f} ATR from pullback"}
+        if body(last) > atr * 1.6:
+            return {"pass": False, "reason": "Last M15 candle is an expansion candle; wait for next pullback"}
+
+        side = "BUY" if is_buy else "SELL"
+        return {"pass": True, "reason": f"{side} pullback continuation: first/second M15 resume candle after retest, extension {leg_extension/atr:.1f} ATR"}
+
+    except Exception as e:
+        return {"pass": False, "reason": f"Early continuation check error: {e}"}
 # =============================================================================
-# MOMENTUM CONFIRMATION — M15 candle direction check (pre-entry filter)
+# MOMENTUM CONFIRMATION â€” M15 candle direction check (pre-entry filter)
 # =============================================================================
 
 def is_momentum_confirmed(symbol: str, direction: str) -> bool:
@@ -648,19 +716,20 @@ def is_momentum_confirmed(symbol: str, direction: str) -> bool:
             candle_confirms = last_close < last_open
         
         if not candle_confirms:
-            print(f"[MOMENTUM] {symbol}: Last M15 candle does NOT confirm {direction.upper()} — BLOCKED")
+            print(f"[MOMENTUM] {symbol}: Last M15 candle does NOT confirm {direction.upper()} â€” BLOCKED")
             return False
         
         if prev_body_size > 0 and prev_body_bot < current_price < prev_body_top:
             depth = min(current_price - prev_body_bot, prev_body_top - current_price)
             penetration = depth / prev_body_size
             if penetration > 0.5:
-                print(f"[MOMENTUM] {symbol}: Price mid-candle ({penetration:.0%} into prev body) — BLOCKED")
+                print(f"[MOMENTUM] {symbol}: Price mid-candle ({penetration:.0%} into prev body) â€” BLOCKED")
                 return False
         
-        print(f"[MOMENTUM] {symbol}: {direction.upper()} confirmed by M15 structure ✓")
+        print(f"[MOMENTUM] {symbol}: {direction.upper()} confirmed by M15 structure âœ“")
         return True
     
     except Exception as e:
         print(f"[MOMENTUM] Error checking {symbol}: {e}")
         return False
+

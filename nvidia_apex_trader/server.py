@@ -51,7 +51,7 @@ manager = ConnectionManager()
 import key_manager
 from core import env_manager
 from core import exchange
-from core.brain import evaluate_market, run_trade_autopsy
+from core.brain import evaluate_market, run_trade_autopsy, clamp_risk_to_symbol
 from core.backtest_agent import generate_ai_backtest
 from core.backtester import run_historical_backtest
 from core.optimizer import run_grid_search
@@ -69,36 +69,36 @@ from core.mt5_engine import (
 # =============================================================================
 # MT5 CONFIGURATION - Pure MetaTrader 5 Operation
 # =============================================================================
-# Broker-specific symbol maps — auto-selected based on connected MT5 server
+# Broker-specific symbol maps â€” auto-selected based on connected MT5 server
 BROKER_SYMBOL_MAPS = {
     "xmglobal": [
-        # ── Precious Metals ──
+        # â”€â”€ Precious Metals â”€â”€
         "GOLD.i#", "SILVER.i#", "XAUEUR.i#", "XAUJPY.i#", "GAUUSD.i#",
-        # ── Indices ──
+        # â”€â”€ Indices â”€â”€
         "US30Cash#", "US100Cash#", "US500Cash#", "JP225Cash#", "GER40Cash#",
-        # ── Energy ──
+        # â”€â”€ Energy â”€â”€
         "OILCash#", "BRENTCash#",
-        # ── Crypto ──
+        # â”€â”€ Crypto â”€â”€
         "BTCUSD#", "ETHUSD#", "BTCJPY#", "XRPUSD#", "ENJUSD#",
-        # ── Forex Majors ──
+        # â”€â”€ Forex Majors â”€â”€
         "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#",
-        # ── Forex Crosses ──
+        # â”€â”€ Forex Crosses â”€â”€
         "EURGBP#", "GBPJPY#", "EURJPY#", "AUDCAD#", "AUDJPY#", "EURAUD#",
         "GBPCAD#", "EURNZD#", "EURCHF#", "AUDNZD#", "GBPAUD#", "CHFJPY#",
         "EURCAD#", "CADJPY#", "NZDCAD#", "NZDJPY#",
     ],
     "goatfunded": [
-        # ── Precious Metals ──
+        # â”€â”€ Precious Metals â”€â”€
         "XAUUSD.x", "XAGUSD.x",
-        # ── Indices ──
+        # â”€â”€ Indices â”€â”€
         "US30.x", "NAS100.x", "SPX500.x", "JAP225.x", "GER40.x", "AUS200.x", "UK100.x",
-        # ── Energy ──
+        # â”€â”€ Energy â”€â”€
         "WTI.x", "BRENT.x",
-        # ── Crypto ──
+        # â”€â”€ Crypto â”€â”€
         "BTCUSD.x", "ETHUSD.x", "SOLUSD.x", "LTCUSD.x", "BNBUSD.x", "BCHUSD.x",
-        # ── Forex Majors ──
+        # â”€â”€ Forex Majors â”€â”€
         "EURUSD.x", "GBPUSD.x", "USDJPY.x", "AUDUSD.x", "USDCAD.x", "USDCHF.x", "NZDUSD.x",
-        # ── Forex Crosses ──
+        # â”€â”€ Forex Crosses â”€â”€
         "EURGBP.x", "GBPJPY.x", "EURJPY.x", "AUDCAD.x", "AUDJPY.x", "EURAUD.x",
         "GBPCAD.x", "EURNZD.x", "EURCHF.x", "AUDNZD.x", "GBPAUD.x", "CHFJPY.x",
         "EURCAD.x", "CADJPY.x", "NZDCAD.x", "NZDJPY.x",
@@ -115,9 +115,9 @@ def detect_broker_from_server(server_name: str) -> str:
     elif "XM" in s:
         return "xmglobal"
     elif "ICMARKET" in s:
-        return "xmglobal"  # ICMarkets uses similar naming — extend when needed
+        return "xmglobal"  # ICMarkets uses similar naming â€” extend when needed
     elif "FTMO" in s:
-        return "xmglobal"  # FTMO uses similar naming — extend when needed
+        return "xmglobal"  # FTMO uses similar naming â€” extend when needed
     return "xmglobal"  # Safe default
 
 _current_broker_id = "xmglobal"
@@ -146,10 +146,33 @@ def reload_target_symbols():
 TARGET_SYMBOLS = BROKER_SYMBOL_MAPS["xmglobal"]  # Default until first reload
 reload_target_symbols()
 
+CRYPTO_SYMBOL_HINTS = ("BTC", "ETH", "XRP", "ENJ", "SOL", "LTC", "BNB", "BCH")
+FX_CURRENCIES = ("EUR", "GBP", "USD", "JPY", "AUD", "CAD", "CHF", "NZD")
+
+def _is_crypto_symbol(symbol: str) -> bool:
+    upper = str(symbol or "").upper()
+    return any(hint in upper for hint in CRYPTO_SYMBOL_HINTS)
+
+def _is_forex_symbol(symbol: str) -> bool:
+    clean = "".join(ch for ch in str(symbol or "").upper() if ch.isalpha())
+    if len(clean) < 6:
+        return False
+    return clean[:3] in FX_CURRENCIES and clean[3:6] in FX_CURRENCIES
+
+def get_active_scan_symbols() -> list:
+    """Return the current broker symbols filtered by the saved trading mode."""
+    params = _load_params_from_disk()
+    mode = str(params.get("mode", "forex")).lower()
+    if mode == "forex":
+        # Forex mode must be pure FX. Mixed metals/indices/energy scans were
+        # still allowing trades like BRENT while the dashboard said forex.
+        return [symbol for symbol in TARGET_SYMBOLS if _is_forex_symbol(symbol)]
+    return list(TARGET_SYMBOLS)
+
 FLEET_SCAN_DELAY = 5
 FLEET_INTER_SYMBOL_DELAY = 1.5  # Throttle between symbol scans to prevent API/VRAM overload
-MAX_OPEN_POSITIONS = 999
-MAX_POSITIONS_PER_SYMBOL = 10  # Hard cap: max open positions allowed per individual symbol
+MAX_OPEN_POSITIONS = 8
+MAX_POSITIONS_PER_SYMBOL = 2  # Hard cap: max open positions allowed per individual symbol
 
 last_positions = []
 last_market_data = {}  # Stores latest MT5 price data + sentiment for autopsy context
@@ -166,19 +189,19 @@ last_margin = {
 }
 
 # Trading execution state
-trading_enabled = False  # Default DISARMED (Shadow Mode) — AI agents sleep until ARMED
+trading_enabled = False  # Default DISARMED (Shadow Mode) â€” AI agents sleep until ARMED
 
-# FIX #3: Stack Direction Lock — once 1st position opens on a symbol, lock direction for all subsequent stacks
+# FIX #3: Stack Direction Lock â€” once 1st position opens on a symbol, lock direction for all subsequent stacks
 # Reset when: circuit breaker trips OR all positions on that symbol close
 stack_direction_lock = {}  # {"EURUSD#": "LONG", "NZDUSD#": "SHORT"}
 
-# FIX #6: Post-Stack Reentry Guard — after a full stack closes, require fresh HTF confirmation
+# FIX #6: Post-Stack Reentry Guard â€” after a full stack closes, require fresh HTF confirmation
 # before re-entering the same direction, to prevent chasing into reversals.
-post_stack_cooldown = {}   # {"NZDUSD#": 1715625600.0}  — timestamp of last full stack close
-last_stack_direction = {}  # {"NZDUSD#": "SHORT"}       — direction of the closed stack
+post_stack_cooldown = {}   # {"NZDUSD#": 1715625600.0}  â€” timestamp of last full stack close
+last_stack_direction = {}  # {"NZDUSD#": "SHORT"}       â€” direction of the closed stack
 POST_STACK_WAIT = 900      # 15 minutes mandatory wait after full stack close
 
-# FIX #4: AI Key health status cache — updated by real API calls, read by /api/ai-keys/status
+# FIX #4: AI Key health status cache â€” updated by real API calls, read by /api/ai-keys/status
 ai_key_health = {}  # {"chat": {"status": "ok", "status_code": 200, "last_checked": "..."}, ...}
 
 # =============================================================================
@@ -344,26 +367,26 @@ def build_step_trail_snapshot():
         }
     return snapshot
 
-# Tier thresholds (percentage from entry) — MICRO-PIPETTE FOREX SCALPING CONFIG
-# 3-Tier MT5 Step-Trailer: instant breakeven → tight trail → ultra-tight runner
-# Calibrated for Forex majors (~4-20 pip ranges) — true scalping geometry
+# Tier thresholds (percentage from entry) â€” MICRO-PIPETTE FOREX SCALPING CONFIG
+# 3-Tier MT5 Step-Trailer: instant breakeven â†’ tight trail â†’ ultra-tight runner
+# Calibrated for Forex majors (~4-20 pip ranges) â€” true scalping geometry
 FOREX_TRAIL_CONFIG = {
-    "initial_sl_pct": 0.15,         # Initial SL ~15 pips
-    "tier1_trigger_pct": 0.04,      # Lock breakeven at ~4 pips profit
-    "tier1_sl_pct": 0.01,           # Breakeven + 1 pip
-    "tier2_trigger_pct": 0.10,      # Start trailing at ~10 pips
-    "tier2_trail_pct": 0.05,        # Trail 5 pips behind peak
-    "tier2_sl_pct": 0.05,           # Recovery inference: SL ~5 pips profit locked
-    "tier3_trigger_pct": 0.20,      # Runner trail at ~20 pips
-    "tier3_trail_pct": 0.03,        # Ultra-tight 3 pip runner trail
-    "tier3_sl_pct": 0.15,           # Recovery inference: SL ~15 pips profit locked
-    "tier2_min_step_pct": 0.01,     # 1 pip ratcheting steps
+    "initial_sl_pct": 0.04,
+    "tier1_trigger_pct": 0.025,
+    "tier1_sl_pct": 0.005,
+    "tier2_trigger_pct": 0.05,
+    "tier2_trail_pct": 0.02,
+    "tier2_sl_pct": 0.025,
+    "tier3_trigger_pct": 0.075,
+    "tier3_trail_pct": 0.015,
+    "tier3_sl_pct": 0.05,
+    "tier2_min_step_pct": 0.005,
 }
 
-# Gold-specific step-trailing — widened to respect Gold ATR & spread noise
+# Gold-specific step-trailing â€” widened to respect Gold ATR & spread noise
 # Previous 0.04% config was too tight, causing whipsaw stops and oversized lots
 GOLD_TRAIL_CONFIG = {
-    "initial_sl_pct": 0.15,         # Let it breathe ~$7.00 move
+    "initial_sl_pct": 0.08,         # Let it breathe without 1.5% unreachable Forex-style stops
     "tier1_trigger_pct": 0.05,      # Breakeven at ~$2.30 profit
     "tier1_sl_pct": 0.01,           # Lock ~$0.46 profit
     "tier2_trigger_pct": 0.10,      # Trail starts at ~$4.60 profit
@@ -392,7 +415,7 @@ def get_trail_config(symbol: str) -> dict:
     return FOREX_TRAIL_CONFIG
 
 def calculate_consensus():
-    """Pure directional averaging — HOLD/NEUTRAL agents are abstentions, not penalties.
+    """Pure directional averaging â€” HOLD/NEUTRAL agents are abstentions, not penalties.
     Only active directional voters are averaged. Synchronized with brain.py consensus logic."""
     global last_swarm_decisions
     agent_weights = {
@@ -424,9 +447,9 @@ def calculate_consensus():
         weight = agent_weights.get(agent, 0)
         direction_int = direction_map.get(direction, 0)
         if direction_int != 0:
-            # Active directional vote — include in average
+            # Active directional vote â€” include in average
             active_votes.append((direction_int * confidence * weight, weight))
-        # HOLD/NEUTRAL = abstention — excluded entirely (no hold_penalty)
+        # HOLD/NEUTRAL = abstention â€” excluded entirely (no hold_penalty)
 
     if active_votes:
         total_active_weight = sum(w for _, w in active_votes)
@@ -615,7 +638,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
     else:
         market_data_text_template = "ERROR: Could not fetch live market data from MT5"
 
-    # ── DOM X-RAY: Fetch L2 Orderbook Imbalance for AI Consensus ──
+    # â”€â”€ DOM X-RAY: Fetch L2 Orderbook Imbalance for AI Consensus â”€â”€
     try:
         dom_data = await fetch_dom_imbalance(symbol)
         print(f"[DOM] Injecting orderbook data into consensus pipeline")
@@ -623,7 +646,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         dom_data = "DOM X-Ray: Unavailable this cycle"
         print(f"[DOM] Fetch failed (non-blocking): {dom_err}")
 
-    # ── CANDLE TREND DATA: Restore multi-timeframe vision for AI reversal detection ──
+    # â”€â”€ CANDLE TREND DATA: Restore multi-timeframe vision for AI reversal detection â”€â”€
     try:
         candle_data = await fetch_multi_timeframe([symbol])
         print(f"[CANDLES] Multi-timeframe trend data loaded")
@@ -631,7 +654,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         candle_data = "Candle data unavailable this cycle."
         print(f"[CANDLES] Fetch failed (non-blocking): {candle_err}")
 
-    # ── SMC INSTITUTIONAL LEVELS: Dedicated FVG/OB summary for AI precision ──
+    # â”€â”€ SMC INSTITUTIONAL LEVELS: Dedicated FVG/OB summary for AI precision â”€â”€
     smc_section = ""
     try:
         raw_1h = await asyncio.to_thread(fetch_candles_sync, symbol, "1h", 100)
@@ -718,29 +741,13 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
   }
         ]
         
-        # ASSET-CLASS CLAMP: Normalize dollar-risk across asset classes
-        # Each class gets geometry calibrated to its ATR and spread characteristics
-        _sym_upper = symbol.upper()
-        is_metal = any(m in _sym_upper for m in ("GOLD", "XAU", "SILVER", "XAG", "GAU"))
-        is_index = any(i in _sym_upper for i in ("US30", "US100", "US500", "JP225", "GER40", "DJ30"))
-        is_energy = any(e in _sym_upper for e in ("OIL", "BRENT"))
-        is_crypto = any(c in _sym_upper for c in ("BTC", "ETH", "XRP", "ENJ"))
-        raw_sl = float(result.get("stop_loss_pct", 1.5))
-        raw_tp = float(result.get("take_profit_pct", 4.0))
-        if is_crypto:
-            clamped_sl = min(raw_sl, 0.30)   # Crypto: Extreme Volatility
-            clamped_tp = min(raw_tp, 0.60)
-            _asset_class = "CRYPTO"
-        elif is_metal or is_index or is_energy:
-            clamped_sl = min(raw_sl, 0.15)   # Wide Volatility (Metals/Indices/Energy)
-            clamped_tp = min(raw_tp, 0.35)
-            _asset_class = "WIDE"
-        else:
-            clamped_sl = min(raw_sl, 0.15)   # Standard Forex
-            clamped_tp = min(raw_tp, 0.30)
-            _asset_class = "FOREX"
+        # Category risk clamp: keep Forex TP reachable while letting wide assets breathe.
+        raw_sl = result.get("stop_loss_pct", 1.5)
+        raw_tp = result.get("take_profit_pct", 4.0)
+        clamped_sl, clamped_tp, _risk_profile = clamp_risk_to_symbol(symbol, raw_sl, raw_tp)
+        _asset_class = _risk_profile["class"]
         if raw_sl != clamped_sl or raw_tp != clamped_tp:
-            print(f"[CLAMP] AI SL/TP clamped ({_asset_class}): SL {raw_sl}% → {clamped_sl}% | TP {raw_tp}% → {clamped_tp}%")
+            print(f"[CLAMP] AI SL/TP clamped ({_asset_class}): SL {raw_sl}% â†’ {clamped_sl}% | TP {raw_tp}% â†’ {clamped_tp}%")
         
         last_consensus = {
             "direction": action,
@@ -762,13 +769,21 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         if action not in ("LONG", "SHORT"):
             entry_blocked = True
         elif not trading_enabled:
-            print(f"[TRADE] Signal: {action} ({consensus_strength}%) — Trading DISABLED (enable from dashboard)")
+            print(f"[TRADE] Signal: {action} ({consensus_strength}%) â€” Trading DISABLED (enable from dashboard)")
             entry_blocked = True
 
-        # --- GATE 1: Consensus Threshold (FIX #1) — raised from 55% to 72% ---
-        if not entry_blocked and consensus_strength < 72:
-            print(f"[GATE-1] BLOCKED: Consensus {consensus_strength}% < 72% threshold. Signal: {action}")
-            entry_blocked = True
+        # --- GATE 1: Consensus Threshold ---
+        # Early pullback-continuation entries can pass sooner so the bot catches
+        # the green-circle entry instead of waiting for a fully extended candle.
+        early_entry = {"pass": False, "reason": "Not checked"}
+        if not entry_blocked:
+            from core.macro_sensors import get_early_trend_continuation
+            early_dir = "BUY" if action == "LONG" else "SELL"
+            early_entry = get_early_trend_continuation(symbol, early_dir)
+            min_consensus = 64 if early_entry.get("pass") else 72
+            if consensus_strength < min_consensus:
+                print(f"[GATE-1] BLOCKED: Consensus {consensus_strength}% < {min_consensus}% threshold. Signal: {action} | Early={early_entry.get('reason')}")
+                entry_blocked = True
 
         # --- GATE 1b: Direction Agreement (FIX #1) ---
         if not entry_blocked:
@@ -781,7 +796,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 print(f"[GATE-1b] BLOCKED: Direction DISAGREEMENT. Action={action} | CLAW={claw_dir} MACRO={macro_decision} SCALPER={scalper_decision}")
                 entry_blocked = True
 
-        # --- GATE 2: SMC Killzone Filter (NY Time) — London/NY AM/NY PM only ---
+        # --- GATE 2: Full London/New York Session Filter (NY Time) ---
         if not entry_blocked:
             from core.macro_sensors import get_smc_killzone
             kz_active, kz_name = get_smc_killzone()
@@ -789,10 +804,10 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 import pytz
                 from datetime import datetime as _dt
                 _ny_now = _dt.now(pytz.utc).astimezone(pytz.timezone('America/New_York'))
-                print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping AI agents. London=2-5AM, NY AM=9:30-11AM, NY PM=1:30-4PM.")
+                print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping entry. Active session is London/New York 2:00 AM-5:00 PM NY.")
                 entry_blocked = True
 
-        # --- GATE 3: HTF Trend Filter (FIX #2) — H1 EMA20 vs EMA50 ---
+        # --- GATE 3: HTF Trend Filter (FIX #2) â€” H1 EMA20 vs EMA50 ---
         h1_bias = ""
         if not entry_blocked:
             from core.macro_sensors import get_h1_trend_bias
@@ -811,13 +826,55 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 print(f"[GATE-4] BLOCKED: Stack LOCKED to {locked_dir} for {symbol}. Signal {action} rejected.")
                 entry_blocked = True
 
-        # --- GATE 5: Momentum Confirmation (FIX #5) ---
+        # --- GATE 5: Early Pullback Continuation (green-circle entry) ---
         if not entry_blocked:
-            from core.macro_sensors import is_momentum_confirmed
-            direction_for_momentum = "BUY" if action == "LONG" else "SELL"
-            if not is_momentum_confirmed(symbol, direction_for_momentum):
-                print(f"[GATE-5] BLOCKED: M15 momentum does NOT confirm {action}.")
+            if not early_entry.get("pass"):
+                print(f"[GATE-5] BLOCKED: Not an early pullback-continuation entry for {action}. {early_entry.get('reason')}")
                 entry_blocked = True
+            else:
+                print(f"[GATE-5] EARLY ENTRY OK: {early_entry.get('reason')}")
+
+        # --- GATE 5b: Hard Trend-Start Strength + MTF Alignment ---
+        # This is the final anti-SL filter for the "entered at the end of trend"
+        # failure mode: do not let lean/mixed signals reach MT5.
+        if not entry_blocked:
+            trend_debug = result.get("_debug", {}).get("trend_bias", {}) or {}
+            per_tf = trend_debug.get("per_tf", {}) or {}
+            try:
+                trend_score = int(trend_debug.get("score", 0) or 0)
+            except (TypeError, ValueError):
+                trend_score = 0
+
+            def _tf_score(tf_name: str) -> int:
+                try:
+                    return int(per_tf.get(tf_name, 0) or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            score_5m = _tf_score("5m")
+            score_15m = _tf_score("15m")
+            score_1h = _tf_score("1h")
+
+            if action == "LONG":
+                mtf_aligned = score_5m >= 20 and score_15m >= 20 and score_1h >= 0
+                score_ok = trend_score >= 30
+            else:
+                mtf_aligned = score_5m <= -20 and score_15m <= -20 and score_1h <= 0
+                score_ok = trend_score <= -30
+
+            if not (score_ok and mtf_aligned):
+                needed = ">= +30" if action == "LONG" else "<= -30"
+                print(
+                    f"[GATE-5b] BLOCKED: Trend start not strong/aligned enough for {action}. "
+                    f"Weighted={trend_score:+d} (need {needed}); "
+                    f"5m={score_5m:+d}, 15m={score_15m:+d}, 1h={score_1h:+d}."
+                )
+                entry_blocked = True
+            else:
+                print(
+                    f"[GATE-5b] TREND START OK: Weighted={trend_score:+d}; "
+                    f"5m={score_5m:+d}, 15m={score_15m:+d}, 1h={score_1h:+d}."
+                )
 
         # --- GATE 6: Post-Stack Reentry Guard (FIX #6) ---
         if not entry_blocked and symbol in post_stack_cooldown:
@@ -828,7 +885,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 # Map action to H1 bias direction for comparison
                 _ps_bias_dir = "SELL" if action == "SHORT" else "BUY"
                 if _ps_bias_dir == _ps_last_dir or action == _ps_last_dir:
-                    # Same direction as the closed stack — require strong trend confirmation
+                    # Same direction as the closed stack â€” require strong trend confirmation
                     _ps_trend_score = abs(result.get("_debug", {}).get("trend_bias", {}).get("score", 0))
                     if _ps_trend_score < 35:
                         _ps_remaining = int(POST_STACK_WAIT - _ps_elapsed)
@@ -836,15 +893,15 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                               f"Trend score {_ps_trend_score} < 35 threshold. Guard expires in {_ps_remaining}s.")
                         entry_blocked = True
                     else:
-                        print(f"[GATE-6] Post-stack {symbol}: Same direction {action} but trend score {_ps_trend_score} >= 35 — ALLOWED")
+                        print(f"[GATE-6] Post-stack {symbol}: Same direction {action} but trend score {_ps_trend_score} >= 35 â€” ALLOWED")
                 else:
-                    print(f"[GATE-6] Post-stack {symbol}: Direction REVERSED ({_ps_last_dir} → {action}) — ALLOWED (fresh signal)")
+                    print(f"[GATE-6] Post-stack {symbol}: Direction REVERSED ({_ps_last_dir} â†’ {action}) â€” ALLOWED (fresh signal)")
             else:
-                # Post-stack cooldown expired — clean up
+                # Post-stack cooldown expired â€” clean up
                 del post_stack_cooldown[symbol]
                 if symbol in last_stack_direction:
                     del last_stack_direction[symbol]
-                print(f"[GATE-6] Post-stack cooldown expired for {symbol} — cleared")
+                print(f"[GATE-6] Post-stack cooldown expired for {symbol} â€” cleared")
 
         # --- GATE 7: Intra-Stack Anti-Chase Distance Guard ---
         # Prevents late entries on already-exhausted moves (the "Trade 4 at the bottom" problem)
@@ -870,11 +927,11 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                     else:
                         print(f"[GATE-7] Anti-chase OK: {symbol} move {move_distance:.5f} < threshold {chase_threshold:.5f}")
 
-        # ============== ALL GATES PASSED — EXECUTE TRADE ==============
+        # ============== ALL GATES PASSED â€” EXECUTE TRADE ==============
         if not entry_blocked:
             print(f"\n{'='*60}")
-            print(f"TRADE EXECUTION TRIGGERED: {action} (Consensus: {consensus_strength}%) [ALL 7 GATES PASSED]")
-            print(f"  HTF: {h1_bias} | Killzone: ✓ | Stack Lock: {stack_direction_lock.get(symbol, 'NEW')} | Momentum: ✓ | Post-Stack: ✓ | Anti-Chase: ✓")
+            print(f"TRADE EXECUTION TRIGGERED: {action} (Consensus: {consensus_strength}%) [ALL 7 GATES PASSED - EARLY ENTRY MODE]")
+            print(f"  HTF: {h1_bias} | Killzone: âœ“ | Stack Lock: {stack_direction_lock.get(symbol, 'NEW')} | Momentum: âœ“ | Post-Stack: âœ“ | Anti-Chase: âœ“")
             print(f"{'='*60}")
             stack_direction_lock[symbol] = action
             
@@ -886,7 +943,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 volatility = result.get("volatility", "medium")
                 
                 async def execute_for_account(key_data):
-                    """Execute trade for a single account — called in parallel for all accounts"""
+                    """Execute trade for a single account â€” called in parallel for all accounts"""
                     t_api_key = key_data.get("api_key", "")
                     t_api_secret = key_data.get("api_secret", "")
                     t_network = key_data.get("network", "india_testnet")
@@ -925,23 +982,22 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         trend_score = result.get("_debug", {}).get("trend_bias", {}).get("score", 0)
                         abs_score = abs(trend_score)
 
-                        if acct_equity <= 100:
-                            base_risk = 0.05 if abs_score >= 25 else 0.03
-                        elif acct_equity <= 500:
-                            base_risk = 0.04 if abs_score >= 25 else 0.025
+                        # Live capital protection: never scale risk up just because the account is small.
+                        # The screenshots showed many simultaneous micro positions losing together, so new
+                        # entries now risk only 0.20%-0.50% before the existing-position split is applied.
+                        if abs_score >= 45:
+                            base_risk = 0.005
                         elif abs_score >= 35:
-                            base_risk = 0.03
-                        elif abs_score >= 30:
-                            base_risk = 0.02
+                            base_risk = 0.0035
                         else:
-                            base_risk = 0.01
-                            
+                            base_risk = 0.002
+
                         active_count = len(existing) if existing else 0
                         split_factor = 1.0 / (active_count + 1)
                         risk_pct = base_risk * split_factor
                         
                         max_risk_usd = acct_equity * risk_pct
-                        print(f"[TRADE:{t_account}] Dollar-Based Risk: Score {abs_score} -> Risk {base_risk*100:.0f}%, Split {active_count+1} -> {risk_pct*100:.2f}% (${max_risk_usd:.2f})")
+                        print(f"[TRADE:{t_account}] Dollar-Based Risk: Score {abs_score} -> Risk {base_risk*100:.2f}%, Split {active_count+1} -> {risk_pct*100:.2f}% (${max_risk_usd:.2f})")
                         
                         symbol_info = await asyncio.to_thread(mt5.symbol_info, symbol)
                         if not symbol_info:
@@ -1027,10 +1083,10 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
 async def step_trailing_loop():
     """Background loop: monitors all fleet positions and applies step-trailing SL logic.
     
-    Tier System (LONG example — inverted for SHORT):
+    Tier System (LONG example â€” inverted for SHORT):
     - INITIAL: SL = Entry - initial_sl_pct
-    - TIER 1:  Price hits tier1_trigger_pct → SL = Entry + tier1_sl_pct
-    - TIER 2:  Price hits tier2_trigger_pct → SL trails tier2_trail_pct behind peak
+    - TIER 1:  Price hits tier1_trigger_pct â†’ SL = Entry + tier1_sl_pct
+    - TIER 2:  Price hits tier2_trigger_pct â†’ SL trails tier2_trail_pct behind peak
     - TIER 3:  Legacy recovery label for persisted aggressive-trail state
     
     Reliability features:
@@ -1039,7 +1095,7 @@ async def step_trailing_loop():
     - 20ms inter-position delay (processes 50 positions in ~1s)
     """
     global step_trail_state
-    import MetaTrader5 as mt5  # Must be at function top — Python scoping treats late imports as local
+    import MetaTrader5 as mt5  # Must be at function top â€” Python scoping treats late imports as local
     import time  # Must be at function top to avoid UnboundLocalError from conditional imports
     
     await asyncio.sleep(3)  # Brief wait for server init, then immediately scan positions
@@ -1175,7 +1231,7 @@ async def step_trailing_loop():
                                 post_stack_cooldown[_symbol] = time.time()
                                 print(f"[POST-STACK] {_symbol}: Full stack closed ({stack_direction_lock[_symbol]}). Reentry guard active for {POST_STACK_WAIT}s.")
                                 del stack_direction_lock[_symbol]
-                                print(f"[STACK-LOCK] Direction lock RESET for {_symbol} — no remaining positions")
+                                print(f"[STACK-LOCK] Direction lock RESET for {_symbol} â€” no remaining positions")
                             
                             await asyncio.sleep(0.02)  # Ultra-fast 20ms delay for large fleet processing
                     
@@ -1301,7 +1357,7 @@ async def step_trailing_loop():
                         
                         state = step_trail_state[trail_key]
                         
-                        # GHOST SHIELD: Position confirmed present — reset strike counter
+                        # GHOST SHIELD: Position confirmed present â€” reset strike counter
                         if state.get("ghost_strikes", 0) > 0:
                             print(f"[GHOST SHIELD] Position {trail_key} confirmed alive. Resetting strikes ({state['ghost_strikes']} -> 0).")
                             state["ghost_strikes"] = 0
@@ -1335,12 +1391,12 @@ async def step_trailing_loop():
                         
                         tier_names = {0: "INITIAL", 1: "BREAKEVEN", 2: "PROFIT STEP", 3: "RUNNER TRAIL"}
                         
-                        # ── CANDIDATE A: Math-Based Tier SL ──
+                        # â”€â”€ CANDIDATE A: Math-Based Tier SL â”€â”€
                         math_tier = state["current_tier"]
                         math_sl = state["current_active_sl"]
                         math_wants_update = False
                         
-                        # TIER 3: Runner Trail — ultra-tight 0.15% behind peak for big moves
+                        # TIER 3: Runner Trail â€” ultra-tight 0.15% behind peak for big moves
                         if move_pct >= cfg.get("tier3_trigger_pct", 999):
                             math_tier = 3
                             if side == "long":
@@ -1360,7 +1416,7 @@ async def step_trailing_loop():
                                     math_sl = candidate_sl
                                     math_wants_update = True
 
-                        # TIER 2: Profit Step — trail 0.3% behind peak
+                        # TIER 2: Profit Step â€” trail 0.3% behind peak
                         elif move_pct >= cfg.get("tier2_trigger_pct", 999):
                             math_tier = 2
                             if side == "long":
@@ -1389,7 +1445,7 @@ async def step_trailing_loop():
                                 math_sl = round(round(entry_price * (1 - cfg["tier1_sl_pct"] / 100) / tick) * tick, digits)
                             math_wants_update = True
                         
-                        # ── CANDIDATE B: AI Predictive Trap SL ──
+                        # â”€â”€ CANDIDATE B: AI Predictive Trap SL â”€â”€
                         trap_sl = None
                         trap_triggered = False
                         trap = get_ai_trap_for_position(trail_key, state)
@@ -1413,14 +1469,14 @@ async def step_trailing_loop():
                                     trap_sl = round(round(trap_protective / tick) * tick, digits)
                                     trap_triggered = True
                         
-                        # ── UNIFIED DECISION: Pick the MORE PROTECTIVE SL ──
+                        # â”€â”€ UNIFIED DECISION: Pick the MORE PROTECTIVE SL â”€â”€
                         final_sl = state["current_active_sl"]
                         final_tier = state["current_tier"]
                         sl_source = None  # "math" or "ai_trap"
                         
                         # Determine which candidate is more protective
                         if trap_triggered and math_wants_update:
-                            # Both want to fire — pick the tighter one
+                            # Both want to fire â€” pick the tighter one
                             if side == "long":
                                 # LONG: higher SL = more protective
                                 if trap_sl >= math_sl:
@@ -1447,7 +1503,7 @@ async def step_trailing_loop():
                             final_tier = math_tier
                             sl_source = "math"
                         
-                        # ── DIRECTIONAL MONOTONICITY GUARD ──
+                        # â”€â”€ DIRECTIONAL MONOTONICITY GUARD â”€â”€
                         # LONG: SL must only move UP | SHORT: SL must only move DOWN
                         sl_direction_valid = False
                         if sl_source and final_sl != state["current_active_sl"]:
@@ -1458,7 +1514,7 @@ async def step_trailing_loop():
                             else:
                                 print(f"  [GUARD] BLOCKED {sl_source} SL for {side.upper()} {symbol}: {state['current_active_sl']:.{digits}f} -> {final_sl:.{digits}f} (wrong direction!)")
                         
-                        # ── SINGLE API EXECUTION ──
+                        # â”€â”€ SINGLE API EXECUTION â”€â”€
                         if sl_direction_valid:
                             if sl_source == "ai_trap":
                                 print(f"\n{'='*60}")
@@ -1466,7 +1522,7 @@ async def step_trailing_loop():
                                 print(f"  {side.upper()} {symbol} | Price {mark_price:.{digits}f} hit trigger {trap.get('predicted_trigger_price', 0):.{digits}f}")
                                 print(f"  SL: {state['current_active_sl']:.{digits}f} -> {final_sl:.{digits}f} (AI Trap)")
                                 if math_wants_update:
-                                    print(f"  Math tier would have set: {math_sl:.{digits}f} (T{math_tier}) — AI was tighter")
+                                    print(f"  Math tier would have set: {math_sl:.{digits}f} (T{math_tier}) â€” AI was tighter")
                                 print(f"  AI Reasoning: {trap.get('reasoning', 'N/A')[:120]}")
                                 print(f"{'='*60}")
                             else:
@@ -1570,12 +1626,14 @@ async def predictive_trap_loop():
                 await asyncio.sleep(60)
                 continue
 
-            # ── NVIDIA RPM GATE ──
+            # â”€â”€ NVIDIA RPM GATE â”€â”€
             # If consensus pipeline already used quota, skip traps to avoid 429 bans
             if nvidia_api_stats["rpm"] >= 25:
-                print(f"[AI-TRAP] SKIPPING cycle — NVIDIA RPM at {nvidia_api_stats['rpm']}/40. Preserving quota for consensus pipeline.")
+                print(f"[AI-TRAP] SKIPPING cycle â€” NVIDIA RPM at {nvidia_api_stats['rpm']}/40. Preserving quota for consensus pipeline.")
                 await asyncio.sleep(60)
                 continue
+
+            active_scan_symbols = set(get_active_scan_symbols())
 
             for trail_key, state in list(step_trail_state.items()):
                 symbol = state.get("symbol", "UNKNOWN")
@@ -1586,10 +1644,11 @@ async def predictive_trap_loop():
                 tp_price = state.get("current_tp", 0)
                 account = state.get("account", "Unknown")
 
-                # ── MT5 MIGRATION: Skip legacy crypto ghosts ──
-                if str(symbol).upper() in {"BTCUSD", "BTCUSDT", "ETHUSD", "ETHUSDT", "BTC", "ETH"}:
-                    print(f"[AI-TRAP] PURGED legacy crypto entry: {trail_key} ({symbol})")
+                # â”€â”€ MT5 MIGRATION: Skip legacy crypto ghosts â”€â”€
+                if symbol not in active_scan_symbols:
+                    print(f"[AI-TRAP] PURGED stale symbol entry: {trail_key} ({symbol}) not in active {len(active_scan_symbols)}-symbol scan list")
                     del step_trail_state[trail_key]
+                    ai_predictive_traps.pop(trail_key, None)
                     save_flight_state(step_trail_state, ai_predictive_traps, force=True)
                     continue
                 
@@ -1601,10 +1660,10 @@ async def predictive_trap_loop():
                 if mt5_tick and mt5_tick.get("last", 0) > 0:
                     current_price = mt5_tick["last"]
                 else:
-                    print(f"[AI-TRAP] MT5 IPC dead for {symbol}, using peak_price fallback")
-                    current_price = peak_price
+                    print(f"[AI-TRAP] SKIPPING {symbol}: MT5 IPC has no live tick. No peak_price fallback for trap placement.")
+                    continue
                 
-                # ── DOM X-RAY: Fetch L2 Orderbook (compressed for 8B model) ──
+                # â”€â”€ DOM X-RAY: Fetch L2 Orderbook (compressed for 8B model) â”€â”€
                 from core.brain import compress_dom_data
                 try:
                     raw_dom = await fetch_dom_imbalance(symbol)
@@ -1621,24 +1680,24 @@ async def predictive_trap_loop():
                 print(f"\n[AI-TRAP] Evaluating {side.upper()} {symbol} [{account}]")
                 print(f"  Entry: {entry_price:.{digits}f} | Peak: {peak_price:.{digits}f} | Current: {current_price:.{digits}f} | SL: {current_sl:.{digits}f}")
                 
-                # ── AI-TRAP PROMPT: Strict geometry-enforced for LONG and SHORT ──
+                # â”€â”€ AI-TRAP PROMPT: Strict geometry-enforced for LONG and SHORT â”€â”€
                 if side == "long":
                     direction_context = (
                         f"SIDE: LONG (price going UP = profit, price going DOWN = loss)\n"
-                        f"CRITICAL GEOMETRY RULES — YOU MUST OBEY THESE OR FAIL:\n"
-                        f"1. predicted_trigger_price MUST BE > current_price ({current_price:.{digits}f}) — trigger is ABOVE current price where we expect price to reach\n"
-                        f"2. protective_sl_price MUST BE > current_sl ({current_sl:.{digits}f}) — new SL locks MORE profit by moving UP\n"
-                        f"3. protective_sl_price MUST BE < predicted_trigger_price — SL is always BELOW the trigger target\n"
-                        f"4. predicted_trigger_price MUST BE < tp_price ({tp_price:.{digits}f}) — trigger fires BEFORE take-profit\n"
+                        f"CRITICAL GEOMETRY RULES â€” YOU MUST OBEY THESE OR FAIL:\n"
+                        f"1. predicted_trigger_price MUST BE > current_price ({current_price:.{digits}f}) â€” trigger is ABOVE current price where we expect price to reach\n"
+                        f"2. protective_sl_price MUST BE > current_sl ({current_sl:.{digits}f}) â€” new SL locks MORE profit by moving UP\n"
+                        f"3. protective_sl_price MUST BE < predicted_trigger_price â€” SL is always BELOW the trigger target\n"
+                        f"4. predicted_trigger_price MUST BE < tp_price ({tp_price:.{digits}f}) â€” trigger fires BEFORE take-profit\n"
                     )
                 else:
                     direction_context = (
                         f"SIDE: SHORT (price going DOWN = profit, price going UP = loss)\n"
-                        f"CRITICAL GEOMETRY RULES — YOU MUST OBEY THESE OR FAIL:\n"
-                        f"1. predicted_trigger_price MUST BE < current_price ({current_price:.{digits}f}) — trigger is BELOW current price where we expect price to drop to\n"
-                        f"2. protective_sl_price MUST BE < current_sl ({current_sl:.{digits}f}) — new SL locks MORE profit by moving DOWN (lower number = tighter protection for shorts)\n"
-                        f"3. protective_sl_price MUST BE > predicted_trigger_price — SL is always ABOVE the trigger target\n"
-                        f"4. predicted_trigger_price MUST BE > tp_price ({tp_price:.{digits}f}) — trigger fires BEFORE take-profit\n"
+                        f"CRITICAL GEOMETRY RULES â€” YOU MUST OBEY THESE OR FAIL:\n"
+                        f"1. predicted_trigger_price MUST BE < current_price ({current_price:.{digits}f}) â€” trigger is BELOW current price where we expect price to drop to\n"
+                        f"2. protective_sl_price MUST BE < current_sl ({current_sl:.{digits}f}) â€” new SL locks MORE profit by moving DOWN (lower number = tighter protection for shorts)\n"
+                        f"3. protective_sl_price MUST BE > predicted_trigger_price â€” SL is always ABOVE the trigger target\n"
+                        f"4. predicted_trigger_price MUST BE > tp_price ({tp_price:.{digits}f}) â€” trigger fires BEFORE take-profit\n"
                     )
                 
                 system_prompt = (
@@ -1698,7 +1757,7 @@ async def predictive_trap_loop():
                             print(f"  [AI-TRAP] Invalid prices: trigger=${trigger}, sl=${protective_sl}")
                             continue
                         
-                        # GUARDRAIL 1: TP Boundary Clamp — trigger must be BETWEEN current price and TP
+                        # GUARDRAIL 1: TP Boundary Clamp â€” trigger must be BETWEEN current price and TP
                         if tp_price > 0:
                             if side == "short" and trigger <= tp_price:
                                 old_trigger = trigger
@@ -1712,7 +1771,7 @@ async def predictive_trap_loop():
                         # GUARDRAIL 2: Reject SL that INCREASES loss exposure beyond current SL
                         # For LONG: new SL below current_sl = worse protection (rejected)
                         # For SHORT: new SL above current_sl = worse protection (rejected)
-                        # NOTE: SL past entry is VALID for profit-locking — do NOT reject it
+                        # NOTE: SL past entry is VALID for profit-locking â€” do NOT reject it
                         sl_worse_than_current = False
                         if side == "long" and protective_sl < current_sl:
                             sl_worse_than_current = True
@@ -1855,7 +1914,7 @@ async def market_data_loop():
     
     await asyncio.sleep(2)
     
-    # ── MT5 IPC Bridge Initialization ──────────────────────────────────
+    # â”€â”€ MT5 IPC Bridge Initialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # The Python MetaTrader5 library REQUIRES mt5.initialize() before any
     # other mt5.* call will work.  Without this, terminal_info(), 
     # symbol_info_tick(), copy_rates_range() etc. all return None / -10004.
@@ -1885,8 +1944,8 @@ async def market_data_loop():
                         print(f"[MT5-BRIDGE] Login failed ({err}) - market data may still work")
             except Exception as e:
                 print(f"[MT5-BRIDGE] Login attempt error: {e}")
-        # Pre-select the target symbols into Market Watch
-        for symbol in TARGET_SYMBOLS:
+        # Pre-select only the active scan symbols into Market Watch.
+        for symbol in get_active_scan_symbols():
             await asyncio.to_thread(mt5.symbol_select, symbol, True)
             print(f"[MT5-BRIDGE] Symbol '{symbol}' selected in Market Watch")
     else:
@@ -1901,6 +1960,7 @@ async def market_data_loop():
         try:
             print("\n[SYSTEM] Initiating new Fleet Scan Cycle...")
             reload_target_symbols()  # Auto-detect broker and load correct symbol catalogue
+            scan_symbols = get_active_scan_symbols()
             active_keys = key_manager.get_active_keys()
             
             # Unconditionally fetch account state so UI never shows $0
@@ -1928,9 +1988,9 @@ async def market_data_loop():
                 circuit_breaker_active = False
 
             if active_keys:
-                print(f"[REAL DATA] Scanning Fleet: {TARGET_SYMBOLS}")
+                print(f"[REAL DATA] Scanning Fleet: {scan_symbols}")
                 # Fetch baseline state using the first symbol just to populate the dashboard basics
-                await fetch_real_market_data(TARGET_SYMBOLS[0], skip_consensus=True)
+                await fetch_real_market_data(scan_symbols[0], skip_consensus=True)
 
                 if circuit_breaker_active:
                     last_consensus = {
@@ -1958,14 +2018,14 @@ async def market_data_loop():
                     }
                 elif not trading_enabled:
                     # ============================================================
-                    # SHADOW MODE — AI AGENTS SLEEPING
+                    # SHADOW MODE â€” AI AGENTS SLEEPING
                     # Only refresh dashboard data (equity, positions, live price)
                     # No NVIDIA/OpenRouter API calls, no SMC, no DOM, no news check
                     # ============================================================
-                    print(f"[SHADOW] AI agents sleeping — DISARMED mode. Dashboard-only refresh.")
+                    print(f"[SHADOW] AI agents sleeping â€” DISARMED mode. Dashboard-only refresh.")
                     
                     # Refresh live price for the dashboard chart
-                    for symbol in TARGET_SYMBOLS:
+                    for symbol in scan_symbols:
                         mt5_data = await fetch_live_mt5_data(symbol)
                         if mt5_data:
                             live_market_price = mt5_data.get("last_price", 0)
@@ -1974,7 +2034,7 @@ async def market_data_loop():
                     last_consensus = {
                         "direction": "HOLD",
                         "strength": 0,
-                        "reasoning": "SHADOW MODE: System DISARMED — AI agents sleeping. Arm the system to activate.",
+                        "reasoning": "SHADOW MODE: System DISARMED â€” AI agents sleeping. Arm the system to activate.",
                         "stop_loss_pct": last_consensus.get("stop_loss_pct", 1.5),
                         "take_profit_pct": last_consensus.get("take_profit_pct", 4.0),
                         "leverage": last_consensus.get("leverage", 10),
@@ -1982,14 +2042,14 @@ async def market_data_loop():
                     }
                     last_swarm_decisions = [
                         {"agent": "SHADOW", "name": "Shadow Mode", "decision": "SLEEP",
-                         "confidence": 0, "signal": "System DISARMED — AI agents inactive. Arm to activate.", "status": "sleeping"}
+                         "confidence": 0, "signal": "System DISARMED â€” AI agents inactive. Arm to activate.", "status": "sleeping"}
                     ]
                     
-                    # Longer sleep in shadow mode — save CPU
+                    # Longer sleep in shadow mode â€” save CPU
                     await asyncio.sleep(30)
                     continue
                 else:
-                    for _scan_idx, symbol in enumerate(TARGET_SYMBOLS):
+                    for _scan_idx, symbol in enumerate(scan_symbols):
                         # 1. Fetch live market data for symbol
                         market_data = await fetch_live_mt5_data(symbol)
                         if market_data is None:
@@ -2031,7 +2091,7 @@ async def market_data_loop():
                                 "strength": 0,
                                 "reasoning": f"NEWS KILLSWITCH: {reason}"
                             }
-                            await asyncio.sleep(0.01)  # Yield to event loop immediately — symbol already skipped
+                            await asyncio.sleep(0.01)  # Yield to event loop immediately â€” symbol already skipped
                             continue
 
                         # 2. Gatekeeper & 3. AI Consensus Pipeline
@@ -2040,9 +2100,9 @@ async def market_data_loop():
                         # 4. API Pacing + Event Loop Yield
                         # Inter-symbol throttle: prevents API 429s and VRAM overflow on 40-symbol fleet
                         await asyncio.sleep(FLEET_INTER_SYMBOL_DELAY)
-                        await asyncio.sleep(0.01)  # Yield to event loop — prevents terminal freezing during 40-symbol scan
+                        await asyncio.sleep(0.01)  # Yield to event loop â€” prevents terminal freezing during 40-symbol scan
                         # End-of-cycle delay only after the last symbol
-                        if _scan_idx == len(TARGET_SYMBOLS) - 1:
+                        if _scan_idx == len(scan_symbols) - 1:
                             await asyncio.sleep(FLEET_SCAN_DELAY)
             else:
                 print("[FALLBACK] No active keys - broadcasting zeros")
@@ -2128,7 +2188,7 @@ async def startup_event():
     server_start_time = time.time()
     backtest_scheduled = False
     
-    # ── FLIGHT RECORDER: Reload persisted state before any loops start ──
+    # â”€â”€ FLIGHT RECORDER: Reload persisted state before any loops start â”€â”€
     loaded_trail, loaded_traps = load_flight_state()
     if loaded_trail:
         step_trail_state.update(loaded_trail)
@@ -2244,7 +2304,7 @@ async def close_position(request: Request):
 @app.post("/api/close-profitable")
 async def close_all_profitable(request: Request):
     """Close all positions that are in profit or at breakeven (PnL >= 0).
-    Uses native MT5 IPC — no legacy exchange wrapper.
+    Uses native MT5 IPC â€” no legacy exchange wrapper.
     """
     try:
         body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
@@ -2362,11 +2422,15 @@ async def get_fleet_symbols():
     active_keys = key_manager.get_active_keys()
     server = active_keys[0].get("network", "") if active_keys else ""
     broker_id = detect_broker_from_server(server)
+    params = _load_params_from_disk()
+    symbols = get_active_scan_symbols()
     return {
         "broker": broker_id,
         "server": server,
-        "symbols": TARGET_SYMBOLS,
-        "count": len(TARGET_SYMBOLS),
+        "mode": params.get("mode", "forex"),
+        "symbols": symbols,
+        "count": len(symbols),
+        "raw_count": len(TARGET_SYMBOLS),
         "available_brokers": list(BROKER_SYMBOL_MAPS.keys()),
     }
 
@@ -2495,7 +2559,7 @@ async def api_ai_keys_status():
         elif role in ai_key_health:
             status[role] = ai_key_health[role]
         else:
-            # Key exists but hasn't been tested yet — assume OK
+            # Key exists but hasn't been tested yet â€” assume OK
             status[role] = {"status": "ok", "status_code": 200, "last_checked": now_iso}
     
     return {"success": True, "status": status}
@@ -2522,18 +2586,18 @@ async def get_accounts():
 
 
 # ============================================================
-# SYSTEM PARAMETERS — PERSISTENT SETTINGS API
+# SYSTEM PARAMETERS â€” PERSISTENT SETTINGS API
 # ============================================================
 _PARAMS_FILE = os.path.join(os.path.expanduser("~"), ".apex_trader", "apex_parameters.json")
 
 FOREX_DEFAULTS = {
     "mode": "forex",
-    "max_risk_pct": 2.0,
-    "base_take_profit_pct": 0.3,
-    "base_stop_loss_pct": 0.15,
+    "max_risk_pct": 0.5,
+    "base_take_profit_pct": 0.08,
+    "base_stop_loss_pct": 0.04,
     "max_leverage": 10,
-    "max_open_positions": 5,
-    "cooldown_minutes": 15,
+    "max_open_positions": 2,
+    "cooldown_minutes": 30,
     "auto_rebalance": True,
     "stop_loss_enabled": True,
     "take_profit_enabled": True,
@@ -2559,6 +2623,25 @@ def _load_params_from_disk():
             with open(_PARAMS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict) and "mode" in data:
+                if data.get("mode") == "forex" and data.get("base_take_profit_pct") == 0.3 and data.get("base_stop_loss_pct") == 0.15:
+                    data["base_take_profit_pct"] = FOREX_DEFAULTS["base_take_profit_pct"]
+                    data["base_stop_loss_pct"] = FOREX_DEFAULTS["base_stop_loss_pct"]
+                    _save_params_to_disk(data)
+                    print("[PARAMS] Migrated Forex defaults: SL=0.04%, TP=0.08%")
+                if data.get("mode") == "forex":
+                    changed = False
+                    if float(data.get("max_risk_pct", FOREX_DEFAULTS["max_risk_pct"])) > FOREX_DEFAULTS["max_risk_pct"]:
+                        data["max_risk_pct"] = FOREX_DEFAULTS["max_risk_pct"]
+                        changed = True
+                    if int(data.get("max_open_positions", FOREX_DEFAULTS["max_open_positions"])) > FOREX_DEFAULTS["max_open_positions"]:
+                        data["max_open_positions"] = FOREX_DEFAULTS["max_open_positions"]
+                        changed = True
+                    if int(data.get("cooldown_minutes", FOREX_DEFAULTS["cooldown_minutes"])) < FOREX_DEFAULTS["cooldown_minutes"]:
+                        data["cooldown_minutes"] = FOREX_DEFAULTS["cooldown_minutes"]
+                        changed = True
+                    if changed:
+                        _save_params_to_disk(data)
+                        print("[PARAMS] Applied Forex safety clamp: risk<=0.5%, max_per_symbol<=2, cooldown>=30min")
                 return data
     except Exception as e:
         print(f"[PARAMS] Load error: {e}")
@@ -2582,9 +2665,9 @@ def _save_params_to_disk(params: dict):
         raise
 
 def _hot_reload_params(params: dict):
-    """Hot-reload globals from saved parameters — no restart needed."""
+    """Hot-reload globals from saved parameters â€” no restart needed."""
     global MAX_POSITIONS_PER_SYMBOL
-    MAX_POSITIONS_PER_SYMBOL = int(params.get("max_open_positions", 5))
+    MAX_POSITIONS_PER_SYMBOL = max(1, min(2, int(params.get("max_open_positions", 2))))
     print(f"[PARAMS] Hot-reloaded: max_per_symbol={MAX_POSITIONS_PER_SYMBOL}, SL={params.get('base_stop_loss_pct')}%, TP={params.get('base_take_profit_pct')}%, cooldown={params.get('cooldown_minutes')}min, mode={params.get('mode')}")
 
 
@@ -2605,7 +2688,7 @@ async def save_parameters(request: Request):
         defaults = dict(FOREX_DEFAULTS) if mode == "forex" else dict(CRYPTO_DEFAULTS)
         merged = {**defaults, **data}
         # Clamp max_open_positions to safety cap
-        merged["max_open_positions"] = min(int(merged.get("max_open_positions", 5)), 20)
+        merged["max_open_positions"] = max(1, min(int(merged.get("max_open_positions", 2)), 2))
         _save_params_to_disk(merged)
         _hot_reload_params(merged)
         return {"success": True, "message": "Parameters saved and hot-reloaded"}
@@ -2665,7 +2748,7 @@ async def reset_circuit_breaker_endpoint():
     last_risk_status["circuit_breaker"] = False
     last_risk_status["circuit_reason"] = ""
     print(f"\n{'='*60}")
-    print(f"[CIRCUIT BREAKER] MANUAL OVERRIDE — Breaker forcefully reset by operator")
+    print(f"[CIRCUIT BREAKER] MANUAL OVERRIDE â€” Breaker forcefully reset by operator")
     print(f"[CIRCUIT BREAKER] AI Swarm re-armed. New entries permitted.")
     print(f"{'='*60}\n")
     return {
@@ -2684,7 +2767,7 @@ async def get_trades():
 
 @app.get("/api/bot-performance")
 async def get_bot_performance(account: str = None):
-    """Get realized performance directly from XM MT5 history — zero DB dependency."""
+    """Get realized performance directly from XM MT5 history â€” zero DB dependency."""
     try:
         active_name = account or (key_manager.get_active_keys()[0].get("account_name", "XMGlobal") if key_manager.get_active_keys() else "XMGlobal")
         mt5_trades = await get_mt5_closed_trades(lookback_days=365, account_name=active_name)
@@ -2832,7 +2915,7 @@ async def get_auto_backtest():
 
 @app.post("/api/backtest/rerun")
 async def rerun_backtest():
-    """Manually trigger a re-backtest — returns immediately, runs in background"""
+    """Manually trigger a re-backtest â€” returns immediately, runs in background"""
     global cached_backtest, backtest_progress
     cached_backtest = None
     backtest_progress = {
@@ -3044,7 +3127,7 @@ async def get_mt5_backtest_status(task_id: str):
         "error": task["error"],
     }
 
-# ── MT5 Optimizer (Grid Search) ──
+# â”€â”€ MT5 Optimizer (Grid Search) â”€â”€
 mt5_optimize_tasks = {}
 
 @app.post("/api/mt5-optimize")
@@ -3252,3 +3335,4 @@ if __name__ == "__main__":
     print("WebSocket: ws://localhost:8000")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

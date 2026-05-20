@@ -200,6 +200,77 @@ def detect_trend_exhaustion(market_data_text: str, action: str) -> dict:
 
     return {"veto": False, "reason": "", "metrics": metrics}
 
+
+def validate_trend_start_entry(market_data_text: str, action: str, macro_result: dict, scalper_result: dict, trend_bias: dict, live_price: float = 0.0) -> dict:
+    """Final deterministic entry gate before any live trade can be emitted.
+
+    The LLMs can describe a trade, but execution must still prove that this is an
+    early trend-continuation entry: trend sign, MTF candles, macro, and scalper all
+    agree. This blocks late chase entries and weak reversals that usually hit SL.
+    """
+    if action not in ("LONG", "SHORT"):
+        return {"pass": True, "reason": "No directional trade requested"}
+
+    expected = "BUY" if action == "LONG" else "SELL"
+    is_long = action == "LONG"
+    metrics = parse_timeframe_metrics(market_data_text)
+    if not metrics:
+        return {"pass": False, "reason": "No candle metrics available for entry timing"}
+
+    macro_decision = str(macro_result.get("decision", "HOLD")).upper()
+    scalper_decision = str(scalper_result.get("decision", "HOLD")).upper()
+    macro_conf = safe_int(macro_result.get("confidence", 0), 0, 0, 100)
+    scalper_conf = safe_int(scalper_result.get("confidence", 0), 0, 0, 100)
+    trend_score = safe_int(trend_bias.get("score", 0), 0, -100, 100)
+
+    if macro_decision != expected:
+        return {"pass": False, "reason": f"Macro is {macro_decision}, not {expected}"}
+    if scalper_decision != expected:
+        return {"pass": False, "reason": f"Scalper is {scalper_decision}, not {expected}"}
+    if macro_conf < 60:
+        return {"pass": False, "reason": f"Macro confidence {macro_conf}% < 60%"}
+    if scalper_conf < 75:
+        return {"pass": False, "reason": f"Scalper confidence {scalper_conf}% < 75%"}
+    if is_long and trend_score < 25:
+        return {"pass": False, "reason": f"Trend score {trend_score:+d} too weak for LONG start"}
+    if not is_long and trend_score > -25:
+        return {"pass": False, "reason": f"Trend score {trend_score:+d} too weak for SHORT start"}
+
+    aligned = []
+    counter = []
+    present = []
+    for tf in ("5m", "15m", "1h"):
+        data = metrics.get(tf)
+        if not data:
+            continue
+        present.append(tf)
+        score = safe_int(data.get("trend_score", 0), 0, -100, 100)
+        momentum = safe_float(data.get("momentum_pct", 0.0), 0.0)
+        ema = str(data.get("ema_cross", "")).upper()
+        if is_long:
+            if score >= 15 and momentum >= -0.05:
+                aligned.append(f"{tf}:{score:+d}")
+            if score <= -20 or ema == "DEATH_CROSS" or momentum < -0.20:
+                counter.append(f"{tf}:{score:+d}/{momentum:+.2f}%")
+        else:
+            if score <= -15 and momentum <= 0.05:
+                aligned.append(f"{tf}:{score:+d}")
+            if score >= 20 or ema == "GOLDEN_CROSS" or momentum > 0.20:
+                counter.append(f"{tf}:{score:+d}/{momentum:+.2f}%")
+
+    if len(present) >= 2 and len(aligned) < 2:
+        return {"pass": False, "reason": f"Only {len(aligned)}/{len(present)} timing frames align ({', '.join(aligned) or 'none'})"}
+    if counter:
+        return {"pass": False, "reason": f"Counter-trend timing frame present: {', '.join(counter)}"}
+
+    raw_entry = scalper_result.get("entry_price", 0)
+    entry_price = safe_float(raw_entry, live_price or 0.0, 0.0)
+    if live_price and live_price > 0 and entry_price > 0:
+        gap_pct = abs(entry_price - live_price) / live_price * 100
+        if gap_pct > 0.20:
+            return {"pass": False, "reason": f"Scalper entry is {gap_pct:.3f}% away from live price"}
+
+    return {"pass": True, "reason": f"Trend-start confirmed: {', '.join(aligned) or 'bias-only'} | Macro {macro_conf}% / Scalper {scalper_conf}%"}
 # ============================================================
 # TREND BIAS PRE-SCORER — Local Python trend analysis (no API cost)
 # ============================================================
@@ -254,6 +325,59 @@ def format_trend_bias(trend_bias: dict) -> str:
     label = str(trend_bias.get("label", "NEUTRAL")).replace("_", " ")
     score = int(trend_bias.get("score", 0) or 0)
     return f"{label} ({score:+d})"
+
+
+def safe_float(value, default: float = 0.0, min_value: float | None = None, max_value: float | None = None) -> float:
+    try:
+        if isinstance(value, str):
+            match = re.search(r"[-+]?\d+(?:\.\d+)?", value.replace(",", ""))
+            value = match.group(0) if match else default
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float(default)
+    if min_value is not None:
+        number = max(min_value, number)
+    if max_value is not None:
+        number = min(max_value, number)
+    return number
+
+
+def safe_int(value, default: int = 0, min_value: int | None = None, max_value: int | None = None) -> int:
+    return int(round(safe_float(value, default, min_value, max_value)))
+
+
+def get_symbol_risk_profile(symbol: str) -> dict:
+    sym = (symbol or "").upper()
+    clean = re.sub(r"[^A-Z0-9]", "", sym)
+    forex_currencies = ("EUR", "GBP", "USD", "JPY", "AUD", "CAD", "CHF", "NZD")
+    is_forex = len(clean) >= 6 and clean[:3] in forex_currencies and clean[3:6] in forex_currencies
+
+    if is_forex:
+        if "JPY" in clean[:6]:
+            return {"class": "FOREX_JPY", "sl": 0.035, "tp": 0.070, "min_tp": 0.040}
+        if clean[:6] in ("EURUSD", "GBPUSD", "AUDUSD", "NZDUSD", "USDCAD", "USDCHF"):
+            return {"class": "FOREX_MAJOR", "sl": 0.040, "tp": 0.080, "min_tp": 0.040}
+        return {"class": "FOREX_CROSS", "sl": 0.050, "tp": 0.100, "min_tp": 0.050}
+    if any(m in sym for m in ("GOLD", "XAU")):
+        return {"class": "GOLD", "sl": 0.080, "tp": 0.160, "min_tp": 0.080}
+    if any(m in sym for m in ("SILVER", "XAG")):
+        return {"class": "SILVER", "sl": 0.100, "tp": 0.200, "min_tp": 0.100}
+    if any(i in sym for i in ("US30", "US100", "NAS100", "US500", "SPX500", "JP225", "JAP225", "GER40", "AUS200", "UK100", "DJ30")):
+        return {"class": "INDEX", "sl": 0.060, "tp": 0.120, "min_tp": 0.060}
+    if any(e in sym for e in ("WTI", "OIL", "BRENT")):
+        return {"class": "ENERGY", "sl": 0.120, "tp": 0.240, "min_tp": 0.120}
+    if any(c in sym for c in ("BTC", "ETH", "SOL", "LTC", "BNB", "BCH", "XRP", "ENJ")):
+        return {"class": "CRYPTO", "sl": 0.300, "tp": 0.600, "min_tp": 0.300}
+    return {"class": "FOREX_DEFAULT", "sl": 0.050, "tp": 0.100, "min_tp": 0.050}
+
+
+def clamp_risk_to_symbol(symbol: str, sl_pct, tp_pct) -> tuple[float, float, dict]:
+    profile = get_symbol_risk_profile(symbol)
+    sl = safe_float(sl_pct, profile["sl"], 0.01, profile["sl"])
+    tp = safe_float(tp_pct, profile["tp"], profile["min_tp"], profile["tp"])
+    if tp < sl * 1.5:
+        tp = min(profile["tp"], sl * 1.5)
+    return round(sl, 3), round(tp, 3), profile
 
 
 # ============================================================
@@ -521,7 +645,7 @@ def _get_max_leverage_setting() -> int:
         if os.path.exists(params_file):
             with open(params_file, "r", encoding="utf-8") as f:
                 data = _json.load(f)
-            return int(data.get("max_leverage", 10))
+            return min(20, max(1, int(data.get("max_leverage", 10))))
     except Exception:
         pass
     return 10
@@ -591,6 +715,30 @@ def execute_local_fallback(payload: dict) -> requests.Response:
                     }]
                 }
         return FakeResponse()
+
+def fetch_nvidia_sync(url: str, headers: dict, payload: dict, timeout: int = 25) -> requests.Response:
+    """Synchronous NVIDIA API call for use via asyncio.to_thread.
+    Used by the AI-TRAP predictive loop which constructs its own headers/payload
+    and needs a simple blocking HTTP POST without the async rate-limiter overhead.
+    """
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout, verify=False)
+        return response
+    except requests.exceptions.Timeout:
+        print("[NVIDIA-SYNC] Request timed out")
+        class TimeoutResponse:
+            status_code = 408
+            text = "Request Timeout"
+            def json(self): return {}
+        return TimeoutResponse()
+    except Exception as e:
+        print(f"[NVIDIA-SYNC] Request failed: {e}")
+        class ErrorResponse:
+            status_code = 500
+            text = str(e)
+            def json(self): return {}
+        return ErrorResponse()
+
 
 async def call_nvidia_nim_api(payload: dict, api_key: str = None, max_retries: int = 3) -> requests.Response:
     """Async NVIDIA API call with non-blocking rate limiting.
@@ -682,7 +830,7 @@ async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h:
         f"Forex/Metals macro trend follower for {symbol}. Trend bias: {trend_bias_text}. "
         "Follow the trend. BUY if bullish, SELL if bearish, HOLD if unclear. Never counter-trend. "
         'Output format: {"decision":"BUY"|"SELL"|"HOLD","confidence":0-100,'
-        '"volatility":"low"|"medium"|"high","recommended_leverage":1-50,"reasoning":"brief"}'
+        '"volatility":"low"|"medium"|"high","recommended_leverage":1-20,"reasoning":"brief"}'
     )
 
     user_prompt = f"1H:{compact_1h}\n4H:{compact_4h}"
@@ -715,11 +863,12 @@ async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h:
         result = robust_json_parse(content, _hold)
         decision = result.get("decision", "HOLD").upper()
         volatility = result.get("volatility", "medium")
-        rec_leverage = min(50, max(1, int(result.get("recommended_leverage", 10))))
-        print(f"[MACRO TREND] {decision} ({result.get('confidence', 0)}%) | Vol: {volatility} | Lev: {rec_leverage}x")
+        confidence = safe_int(result.get("confidence", 0), 0, 0, 100)
+        rec_leverage = safe_int(result.get("recommended_leverage", 10), 10, 1, 20)
+        print(f"[MACRO TREND] {decision} ({confidence}%) | Vol: {volatility} | Lev: {rec_leverage}x")
         return {
             "decision": decision,
-            "confidence": result.get("confidence", 0),
+            "confidence": confidence,
             "volatility": volatility,
             "recommended_leverage": rec_leverage,
             "reasoning": result.get("reasoning", "")
@@ -732,7 +881,8 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
     if not nvidia_key:
         return {"decision": "HOLD", "confidence": 0, "reasoning": "No NVIDIA API key"}
 
-    _hold = {"decision": "HOLD", "confidence": 0, "entry_price": "", "reasoning": "", "stop_loss_pct": 1.5, "take_profit_pct": 4.0, "leverage": 10}
+    risk_profile = get_symbol_risk_profile(symbol)
+    _hold = {"decision": "HOLD", "confidence": 0, "entry_price": "", "reasoning": "", "stop_loss_pct": risk_profile["sl"], "take_profit_pct": risk_profile["tp"], "leverage": 10}
 
     if live_price > 0:
         current_price = live_price
@@ -749,15 +899,18 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
     # Inject HTF bias so the model knows the H1 direction
     htf_line = f" HTF H1 bias: {h1_bias}. Only output signals matching HTF direction." if h1_bias and h1_bias != "SKIP" else ""
     system_prompt = (
-        "You are an elite quantitative trading AI based on the Qwen architecture. "
+        "You are an elite Institutional SMC (Smart Money Concepts) Sniper. "
         "Analyze the provided market data concisely. "
-        "You may output a brief logical analysis, but you MUST conclude your response "
-        "with a single, strictly formatted JSON block containing your final decision. "
-        "Do not output any text after the JSON block. "
-        f"Forex/Metals scalper for {symbol} at {current_price:,.2f}. Trend: {trend_bias_text}.{htf_line} "
-        "Follow the trend direction only. Never counter-trend. "
+        "You MUST conclude your response with a single, strictly formatted JSON block. Do not output text after the JSON. "
+        f"Trading {symbol} at {current_price:,.2f}. Trend: {trend_bias_text}.{htf_line} "
+        "Do NOT chase overextended trends or massive green/red candles. "
+        "You MUST wait for price to retrace into a valid Order Block (OB) or Fair Value Gap (FVG). "
+        "If BULLISH, only BUY if the price is resting inside or very near a Bullish OB/FVG (Discount). "
+        "If BEARISH, only SELL if the price is resting inside or very near a Bearish OB/FVG (Premium). "
+        "If the price is in 'no-man's land' far from these levels, output HOLD. "
+        f"Use {risk_profile['class']} scalp geometry: stop_loss_pct <= {risk_profile['sl']:.3f}, take_profit_pct <= {risk_profile['tp']:.3f}. "
         'Output format: {"decision":"BUY"|"SELL"|"HOLD","confidence":0-100,"entry_price":number,'
-        '"stop_loss_pct":0.1-3.0,"take_profit_pct":0.3-10.0,"leverage":1-50,"reasoning":"brief"}'
+        '"stop_loss_pct":number,"take_profit_pct":number,"leverage":1-20,"reasoning":"brief"}'
     )
 
     user_prompt = f"{compact_data}"
@@ -787,17 +940,16 @@ async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float =
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
         result = robust_json_parse(content, _hold)
         decision = result.get("decision", "HOLD").upper()
-        sl_pct = min(3.0, max(0.3, float(result.get("stop_loss_pct", 1.5))))
-        tp_pct = min(10.0, max(0.5, float(result.get("take_profit_pct", 4.0))))
-        ai_leverage = min(50, max(1, int(result.get("leverage", 10))))
+        sl_pct, tp_pct, profile = clamp_risk_to_symbol(symbol, result.get("stop_loss_pct", risk_profile["sl"]), result.get("take_profit_pct", risk_profile["tp"]))
+        ai_leverage = safe_int(result.get("leverage", 10), 10, 1, 20)
         raw_entry = result.get("entry_price", "")
         try:
             parsed_entry = float(raw_entry)
         except (TypeError, ValueError):
             parsed_entry = 0.0
         entry_price = round(parsed_entry, 5) if parsed_entry > 0 else round(current_price, 5)
-        confidence = result.get("confidence", 0)
-        print(f"[SCALPER] {decision} @ {entry_price} ({confidence}%) | SL: {sl_pct}% | TP: {tp_pct}% | Lev: {ai_leverage}x")
+        confidence = safe_int(result.get("confidence", 0), 0, 0, 100)
+        print(f"[SCALPER] {decision} @ {entry_price} ({confidence}%) | {profile['class']} SL: {sl_pct}% | TP: {tp_pct}% | Lev: {ai_leverage}x")
         return {
             "decision": decision,
             "confidence": confidence,
@@ -846,15 +998,32 @@ def is_aplus_setup(market_data_text: str, trend_bias: dict, live_price: float, s
     score_1h = per_tf.get("1h", 0)
     score_4h = per_tf.get("4h", 0)
 
-    # Determine structural direction
+    # Determine structural direction. Strict macro alignment is preferred, but the
+    # green-circle entry happens before 4H fully catches up, so a proven M15 pullback
+    # continuation can wake the agents early when H1 is not fighting the trade.
     weighted = trend_bias.get("score", 0)
+    early_entry = {"pass": False, "reason": "Not checked"}
     
     if weighted >= 20 and score_1h >= 15 and score_4h >= 15:
         target_dir = "LONG"
     elif weighted <= -20 and score_1h <= -15 and score_4h <= -15:
         target_dir = "SHORT"
     else:
-        return False, f"1H Market Structure Mismatch or Weak Macro Trend (Weighted: {weighted:+.0f}, 1H: {score_1h:+d}, 4H: {score_4h:+d})"
+        try:
+            from core.macro_sensors import get_early_trend_continuation
+            if weighted >= 12 and score_1h >= 0:
+                early_entry = get_early_trend_continuation(symbol, "BUY")
+                if early_entry.get("pass"):
+                    print(f"[A+ EARLY WAKE] BUY pullback continuation accepted before full 4H confirmation: {early_entry.get('reason')}")
+                    return True, ""
+            elif weighted <= -12 and score_1h <= 0:
+                early_entry = get_early_trend_continuation(symbol, "SELL")
+                if early_entry.get("pass"):
+                    print(f"[A+ EARLY WAKE] SELL pullback continuation accepted before full 4H confirmation: {early_entry.get('reason')}")
+                    return True, ""
+        except Exception as early_err:
+            early_entry = {"pass": False, "reason": str(early_err)}
+        return False, f"1H Market Structure Mismatch or Weak Macro Trend (Weighted: {weighted:+.0f}, 1H: {score_1h:+d}, 4H: {score_4h:+d}) | Early: {early_entry.get('reason')}"
 
     # 3. SMC Proximity Check
     bullish_levels = []
@@ -875,7 +1044,15 @@ def is_aplus_setup(market_data_text: str, trend_bias: dict, live_price: float, s
     # Check distance to the appropriate levels
     target_levels = bullish_levels if target_dir == "LONG" else bearish_levels
     if not target_levels:
-        return True, "" # Skip if no levels found in text
+        try:
+            from core.macro_sensors import get_early_trend_continuation
+            early_entry = get_early_trend_continuation(symbol, "BUY" if target_dir == "LONG" else "SELL")
+            if early_entry.get("pass"):
+                print(f"[A+ EARLY WAKE] No SMC level, but pullback continuation is clean: {early_entry.get('reason')}")
+                return True, ""
+        except Exception:
+            pass
+        return False, "No Institutional SMC levels (OB/FVG) detected to support entry. Blocking FOMO."
         
     closest_dist_pct = min(abs(live_price - lvl) / live_price for lvl in target_levels)
     
@@ -886,6 +1063,14 @@ def is_aplus_setup(market_data_text: str, trend_bias: dict, live_price: float, s
     
     if closest_dist_pct > proximity_buffer:
         side_str = "Demand/Support" if target_dir == "LONG" else "Supply/Resistance"
+        try:
+            from core.macro_sensors import get_early_trend_continuation
+            early_entry = get_early_trend_continuation(symbol, "BUY" if target_dir == "LONG" else "SELL")
+            if early_entry.get("pass"):
+                print(f"[A+ EARLY WAKE] SMC level is {closest_dist_pct*100:.2f}% away, but pullback continuation is clean: {early_entry.get('reason')}")
+                return True, ""
+        except Exception:
+            pass
         return False, f"Price not in Institutional Strike Zone (Nearest {side_str} is {closest_dist_pct*100:.2f}% away, limit {proximity_buffer*100:.2f}%)"
 
     return True, ""
@@ -1042,6 +1227,18 @@ async def evaluate_market(memory_text: str, market_data_text: str, margin: float
     }
 
     def normalize_confidence(value):
+        # Handle word-based confidence from local LLM fallback (e.g. "High", "Medium", "Low")
+        if isinstance(value, str):
+            word_map = {"high": 85, "very high": 95, "medium": 60, "moderate": 60,
+                        "low": 30, "very low": 15, "none": 0}
+            mapped = word_map.get(value.strip().lower())
+            if mapped is not None:
+                value = mapped
+            else:
+                try:
+                    value = float(value)
+                except (ValueError, TypeError):
+                    value = 50  # Safe mid-range default for unparseable strings
         confidence_value = float(value or 0)
         if confidence_value > 1:
             return confidence_value / 100
@@ -1120,34 +1317,41 @@ async def evaluate_market(memory_text: str, market_data_text: str, margin: float
         print(f"[VETO] Trend Exhaustion detected. Ignoring late entry. {exhaustion_check['reason']}")
         final_action = "HOLD"
 
+    entry_quality = validate_trend_start_entry(market_data_text, final_action, macro_result, scalper_result, trend_bias, symbol_live_price)
+    if final_action in ("LONG", "SHORT") and not entry_quality.get("pass"):
+        print(f"[ENTRY VETO] {entry_quality.get('reason', 'Entry quality failed')}. Trade BLOCKED before execution.")
+        final_action = "HOLD"
+    elif final_action in ("LONG", "SHORT"):
+        print(f"[ENTRY CHECK] {entry_quality.get('reason', 'Trend-start confirmed')}. Approved for execution.")
+
     # AI-determined risk parameters from the Scalper agent
-    ai_sl = scalper_result.get("stop_loss_pct", 1.5)
-    ai_tp = scalper_result.get("take_profit_pct", 4.0)
-    ai_leverage = scalper_result.get("leverage", 10)
-    macro_leverage = macro_result.get("recommended_leverage", 10)
+    ai_sl, ai_tp, risk_profile = clamp_risk_to_symbol(symbol, scalper_result.get("stop_loss_pct", 1.5), scalper_result.get("take_profit_pct", 4.0))
+    ai_leverage = safe_int(scalper_result.get("leverage", 10), 10, 1, 20)
+    macro_leverage = safe_int(macro_result.get("recommended_leverage", 10), 10, 1, 20)
     volatility = macro_result.get("volatility", "medium")
 
-    # Blend leverage: weight toward the more confident agent, cap at 50x
-    macro_conf = macro_result.get("confidence", 50)
-    scalper_conf = scalper_result.get("confidence", 50)
+    # Blend leverage: weight toward the more confident agent, cap at 20x
+    macro_conf = safe_int(macro_result.get("confidence", 50), 50, 0, 100)
+    scalper_conf = safe_int(scalper_result.get("confidence", 50), 50, 0, 100)
     total_conf = macro_conf + scalper_conf
     if total_conf > 0:
         # Confidence-weighted average
         final_leverage = int((ai_leverage * scalper_conf + macro_leverage * macro_conf) / total_conf)
     else:
         final_leverage = 10
-    final_leverage = min(50, max(1, final_leverage))
+    final_leverage = min(20, max(1, final_leverage))
 
     avg_confidence = (macro_conf + scalper_conf) / 2
     print(f"[RISK CONTROL] AI Confidence: {avg_confidence:.0f}% (Macro: {macro_conf}% / Scalper: {scalper_conf}%). AI dynamically selected {final_leverage}x Leverage.")
 
     # Volatility adjustment: widen SL/TP in high vol, tighten in low vol
     if volatility == "high":
-        ai_sl = min(3.0, ai_sl * 1.3)
-        ai_tp = min(10.0, ai_tp * 1.3)
+        ai_sl = ai_sl * 1.1
+        ai_tp = ai_tp * 1.1
     elif volatility == "low":
-        ai_sl = max(0.5, ai_sl * 0.8)
-        ai_tp = max(1.0, ai_tp * 0.8)
+        ai_sl = ai_sl * 0.9
+        ai_tp = ai_tp * 0.9
+    ai_sl, ai_tp, risk_profile = clamp_risk_to_symbol(symbol, ai_sl, ai_tp)
 
     # ============================================================
     # RISK/REWARD GATE — Hard VETO (optimized for M15 scalping)
@@ -1155,25 +1359,25 @@ async def evaluate_market(memory_text: str, market_data_text: str, margin: float
     # Lowered thresholds to allow more frequent high-probability scalps
     # while still blocking structurally bad setups.
     MIN_RR_RATIO = 1.5  # Standard M15 scalping minimum: 1.5x reward per 1x risk
-    MIN_TP_PCT = 0.2    # Minimum 0.2% TP allows Forex swings while blocking fee/spread micro-scalps
+    MIN_TP_PCT = risk_profile["min_tp"]
 
     if final_action in ("LONG", "SHORT"):
         rr_ratio = round(ai_tp / ai_sl, 2) if ai_sl > 0 else 0.0
 
         # GATE 1: Anti-Fee Scalp Protection
         if ai_tp < MIN_TP_PCT:
-            print(f"[VETO] Anti-Fee Scalp Protection: TP={ai_tp:.2f}% is below {MIN_TP_PCT}% minimum. Trade cannot clear exchange fees. Blocking.")
+            print(f"[VETO] Anti-Fee Scalp Protection: TP={ai_tp:.3f}% is below {MIN_TP_PCT:.3f}% minimum. Trade cannot clear fees/spread. Blocking.")
             final_action = "HOLD"
 
         # GATE 2: Minimum Risk/Reward Ratio
         elif rr_ratio < MIN_RR_RATIO:
-            print(f"[VETO] Insufficient Risk/Reward Ratio ({rr_ratio:.2f}). Minimum required is {MIN_RR_RATIO}. TP={ai_tp:.1f}% vs SL={ai_sl:.1f}%. Trade rejected.")
+            print(f"[VETO] Insufficient Risk/Reward Ratio ({rr_ratio:.2f}). Minimum required is {MIN_RR_RATIO}. TP={ai_tp:.3f}% vs SL={ai_sl:.3f}%. Trade rejected.")
             final_action = "HOLD"
 
         else:
-            print(f"[RISK GATE] R:R Ratio {rr_ratio:.2f} (>= {MIN_RR_RATIO}) | TP={ai_tp:.1f}% | SL={ai_sl:.1f}% | APPROVED")
+            print(f"[RISK GATE] R:R Ratio {rr_ratio:.2f} (>= {MIN_RR_RATIO}) | TP={ai_tp:.3f}% | SL={ai_sl:.3f}% | APPROVED")
 
-    print(f"[RISK] AI Params: SL={ai_sl:.1f}% | TP={ai_tp:.1f}% | Leverage={final_leverage}x | Volatility={volatility}")
+    print(f"[RISK] {risk_profile['class']} Params: SL={ai_sl:.3f}% | TP={ai_tp:.3f}% | Leverage={final_leverage}x | Volatility={volatility}")
 
     # Ensure all result variables are defined with safe defaults
     if 'reasoning' not in locals():

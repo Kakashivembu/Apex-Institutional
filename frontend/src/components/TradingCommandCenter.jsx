@@ -11,12 +11,12 @@ import { API_BASE } from '../lib/api';
 const USDT_TO_INR = 85;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SMC KILLZONE ENGINE — Strict New York Time (EST/EDT)
+// SMC TRADING SESSION ENGINE — Strict New York Time (EST/EDT)
 // ═══════════════════════════════════════════════════════════════════════════
 const SMC_KILLZONES = [
-  { id: 'london',  label: 'London KZ', emoji: '🇬🇧', open: 2.0,  close: 5.0,  color: 'cyan',   gradient: 'from-cyan-500 to-blue-600',     glow: 'rgba(6,182,212,0.6)',   bg: 'cyan-500'   },
-  { id: 'ny_am',   label: 'NY AM KZ',  emoji: '🇺🇸', open: 9.5,  close: 11.0, color: 'amber',  gradient: 'from-amber-500 to-orange-600',  glow: 'rgba(245,158,11,0.6)', bg: 'amber-500'  },
-  { id: 'ny_pm',   label: 'NY PM KZ',  emoji: '🇺🇸', open: 13.5, close: 16.0, color: 'purple', gradient: 'from-purple-500 to-pink-600',   glow: 'rgba(168,85,247,0.6)', bg: 'purple-500' },
+  { id: 'london',     label: 'London Session', emoji: '\u{1F1EC}\u{1F1E7}', open: 2.0,  close: 8.0,  color: 'cyan',   gradient: 'from-cyan-500 to-blue-600',     glow: 'rgba(6,182,212,0.6)',   bg: 'cyan-500'   },
+  { id: 'ny_overlap', label: 'London/NY Overlap', emoji: '\u{1F1EC}\u{1F1E7}\u{1F1FA}\u{1F1F8}', open: 8.0,  close: 12.0, color: 'amber',  gradient: 'from-amber-500 to-orange-600',  glow: 'rgba(245,158,11,0.6)', bg: 'amber-500'  },
+  { id: 'ny_session', label: 'New York Session', emoji: '\u{1F1FA}\u{1F1F8}', open: 12.0, close: 17.0, color: 'purple', gradient: 'from-purple-500 to-pink-600',   glow: 'rgba(168,85,247,0.6)', bg: 'purple-500' },
 ];
 
 const getActiveSessions = () => {
@@ -326,7 +326,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               </span>
             )) : (
               <span className="px-3 py-1 bg-slate-700/30 text-slate-500 text-xs rounded-full border border-slate-600/30 uppercase font-bold tracking-widest">
-                💤 Dead Zone
+                💤 Market Standby
               </span>
             )}
             {/* FIX #1: Show when AI radar overrides the manual selection */}
@@ -497,7 +497,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               </div>
             ) : (
               <div className="text-center py-1">
-                <p className="text-lg font-black font-heading text-slate-600">💤 Dead Zone</p>
+                <p className="text-lg font-black font-heading text-slate-600">💤 Market Standby</p>
                 {sessionData.nextSession && (
                   <p className="text-[10px] text-slate-500 mt-1">
                     Next: <span className="text-white font-bold">{sessionData.nextSession.emoji} {sessionData.nextSession.label}</span> in <span className="text-cyan-400 font-bold">{sessionData.nextIn}</span>
