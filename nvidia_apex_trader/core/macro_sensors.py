@@ -278,11 +278,50 @@ async def calculate_currency_matrix() -> dict:
     """
     Fetches 4H and 1H price changes for major pairs to calculate a relative strength score (0-100)
     for the base currencies (USD, EUR, GBP, JPY, XAU). Returns Strongest and Weakest.
+    
+    Broker-agnostic: dynamically resolves symbol suffixes (.x, #, .i#, bare) for
+    each pair so it works across XMGlobal, GoatFunded, and other prop firm accounts.
     """
-    symbols = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "GOLD.i#"]
+    from core.mt5_engine import _resolve_tradeable_symbol
+
+    # --- Resolve forex pairs via the existing broker-agnostic resolver ---
+    base_forex = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
+    resolved_symbols = []
+    for base in base_forex:
+        resolved = _resolve_tradeable_symbol(base)
+        info = mt5.symbol_info(resolved)
+        if info is not None:
+            if not info.visible:
+                mt5.symbol_select(resolved, True)
+            resolved_symbols.append(resolved)
+        else:
+            logger.warning(f"[MATRIX] Could not resolve forex pair: {base} (tried {resolved})")
+
+    # --- Resolve Gold via alias probing (broker naming varies wildly) ---
+    gold_aliases = ["XAUUSD", "XAUUSD.x", "GOLD", "GOLD.x", "GOLD.i#", "GOLD#", "XAUUSD#", "XAUUSD.i#"]
+    gold_symbol = None
+    for alias in gold_aliases:
+        info = mt5.symbol_info(alias)
+        if info is not None:
+            if not info.visible:
+                mt5.symbol_select(alias, True)
+            gold_symbol = alias
+            break
+    if gold_symbol:
+        resolved_symbols.append(gold_symbol)
+    else:
+        # Last resort: try the generic resolver
+        fallback = _resolve_tradeable_symbol("XAUUSD")
+        if mt5.symbol_info(fallback) is not None:
+            resolved_symbols.append(fallback)
+            gold_symbol = fallback
+        else:
+            logger.warning("[MATRIX] Could not resolve any Gold symbol for currency matrix")
+
+    logger.info(f"[MATRIX] Resolved symbols: {resolved_symbols}")
     matrix = {}
     
-    for sym in symbols:
+    for sym in resolved_symbols:
         # Fetch last 2 candles for 4H and 1H
         rates_h4 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_H4, 0, 2)
         rates_h1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_H1, 0, 2)
@@ -305,12 +344,14 @@ async def calculate_currency_matrix() -> dict:
     # We weight H4 more heavily than H1
     for sym, changes in matrix.items():
         total_change = (changes["H4"] * 0.7) + (changes["H1"] * 0.3)
-        # GOLD.i# is broker-literal for XAU/USD
-        if sym.startswith("GOLD"):
+        # Strip broker suffixes to extract clean base/quote currencies
+        clean = sym.upper().replace(".X", "").replace(".I#", "").replace("#", "").replace(".I", "").replace(".PRO", "").replace(".C", "")
+        # Gold/XAU detection (broker names: GOLD, XAUUSD, GOLD.x, XAUUSD.i#, etc.)
+        if clean.startswith("GOLD") or clean.startswith("XAU"):
             base, quote = "XAU", "USD"
         else:
-            base = sym[:3]
-            quote = sym[3:]
+            base = clean[:3]
+            quote = clean[3:6]  # Limit to 3 chars to avoid residual suffix chars
         
         if quote == "USD":
             # Direct pair (EURUSD, GBPUSD, AUDUSD, GOLD)

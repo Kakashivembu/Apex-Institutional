@@ -363,6 +363,30 @@ async def check_market_volatility(symbol: str = "GOLD") -> dict:
     gap = scores.get(strongest, 50) - scores.get(weakest, 50)
     
     # Gating Logic
+    # FIX: If matrix gap is 0.0 (all symbols failed to resolve or weekend),
+    # don't auto-block — fall through to velocity-only check.
+    if gap == 0.0 and not matrix_data.get('matrix'):
+        # Matrix is completely empty — data failure, not a real sideways market
+        if ratio > 0.5:
+            print(f"[GATING] ⚠ Matrix data unavailable (gap=0.0). Tick Velocity {ratio}x > 0.5x — PASSING on velocity alone.")
+            return {"pass": True}
+        else:
+            print(f"[GATING] ⚠ Matrix data unavailable (gap=0.0) AND low velocity ({ratio}x). Blocking to be safe.")
+            return {
+                "pass": False,
+                "reason": f"Matrix data failure + low velocity ({ratio}x)",
+                "result": {
+                    "action": "HOLD",
+                    "asset": "GOLD",
+                    "leverage": 1,
+                    "stop_loss_pct": 1.5,
+                    "take_profit_pct": 4.0,
+                    "volatility": "low",
+                    "reasoning": f"GATED: Matrix data failure (0 symbols resolved) + low velocity ({ratio}x).",
+                    "_debug": {}
+                }
+            }
+    
     if is_high_velocity or gap >= 20.0:
         print(f"[GATING] Macro volatility confirmed. Tick Velocity: {ratio}x. Matrix Gap: {gap:.1f}. Proceeding to AI consensus.")
         return {"pass": True}
