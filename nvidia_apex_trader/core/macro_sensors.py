@@ -575,7 +575,7 @@ def get_h1_trend_bias(symbol: str) -> dict:
         mid_price = (ema20 + ema50) / 2 if (ema20 + ema50) > 0 else 1
         gap_pct = abs(ema20 - ema50) / mid_price * 100
         
-        if gap_pct < 0.03:
+        if gap_pct < 0.005:
             bias = "SKIP"
             reason = f"H1 EMAs ranging (gap: {gap_pct:.4f}%)"
         elif ema20 > ema50:
@@ -732,4 +732,329 @@ def is_momentum_confirmed(symbol: str, direction: str) -> bool:
     except Exception as e:
         print(f"[MOMENTUM] Error checking {symbol}: {e}")
         return False
+
+
+# =============================================================================
+# ORDER FLOW IMBALANCE (OFI) SENSOR — Institutional HFT Footprint Detector
+# =============================================================================
+# Hybrid approach:
+#   1. Primary: MT5 Depth of Market (DOM) — works on exchange-traded instruments
+#   2. Fallback: Tick-Volume-Weighted Price Delta — works on ALL brokers (Forex/CFD)
+#
+# The fallback computes OFI from M1 candle tick-volume and price direction:
+#   - Aggressive buying = price rising on high volume → positive OFI
+#   - Institutional distribution = price falling on high volume → negative OFI
+# =============================================================================
+
+_prev_dom_state = {}  # Global memory cache for DOM-based OFI delta tracking
+_prev_tvd_state = {}  # Global memory cache for tick-volume-delta OFI
+
+
+def _try_dom_ofi(symbol: str) -> tuple[bool, float]:
+    """Attempt DOM-based OFI. Returns (success, ofi_value).
+    Returns (False, 0.0) if DOM is not available for this broker/symbol."""
+    global _prev_dom_state
+
+    if not mt5.market_book_add(symbol):
+        return False, 0.0
+
+    book = mt5.market_book_get(symbol)
+    if not book:
+        mt5.market_book_release(symbol)
+        return False, 0.0
+
+    # Isolate bids and asks from current snapshot
+    bids = [level for level in book if level.type == mt5.BOOK_TYPE_BUY]
+    asks = [level for level in book if level.type == mt5.BOOK_TYPE_SELL]
+
+    if not bids or not asks:
+        mt5.market_book_release(symbol)
+        return False, 0.0
+
+    # Extract true best bid/ask
+    best_bid = max(bids, key=lambda x: x.price)
+    best_ask = min(asks, key=lambda x: x.price)
+
+    curr_bid_p, curr_bid_v = best_bid.price, best_bid.volume
+    curr_ask_p, curr_ask_v = best_ask.price, best_ask.volume
+
+    if symbol not in _prev_dom_state:
+        _prev_dom_state[symbol] = {
+            "bid_p": curr_bid_p, "bid_v": curr_bid_v,
+            "ask_p": curr_ask_p, "ask_v": curr_ask_v
+        }
+        return True, 0.0  # First scan — initialized, real data next cycle
+
+    prev = _prev_dom_state[symbol]
+
+    # Calculate Institutional Delta Bid Accumulation
+    if curr_bid_p > prev["bid_p"]:
+        delta_bid_vol = curr_bid_v
+    elif curr_bid_p == prev["bid_p"]:
+        delta_bid_vol = curr_bid_v - prev["bid_v"]
+    else:
+        delta_bid_vol = 0
+
+    # Calculate Institutional Delta Ask Accumulation
+    if curr_ask_p < prev["ask_p"]:
+        delta_ask_vol = curr_ask_v
+    elif curr_ask_p == prev["ask_p"]:
+        delta_ask_vol = curr_ask_v - prev["ask_v"]
+    else:
+        delta_ask_vol = 0
+
+    _prev_dom_state[symbol] = {
+        "bid_p": curr_bid_p, "bid_v": curr_bid_v,
+        "ask_p": curr_ask_p, "ask_v": curr_ask_v
+    }
+
+    return True, float(delta_bid_vol - delta_ask_vol)
+
+
+def _tick_volume_delta_ofi(symbol: str) -> float:
+    """Tick-Volume-Weighted Price Delta OFI — works on ALL MT5 brokers.
+
+    Algorithm:
+    - Fetch the last 10 closed M1 candles + 1 forming candle
+    - For each closed candle, compute signed_flow = (close - open) * tick_volume
+      Positive = buyers dominated that minute, Negative = sellers dominated
+    - Recent candles (last 3) are the "live" window; older 7 are the "baseline"
+    - OFI = sum(recent_signed_flow) - mean(baseline_signed_flow) * 3
+      This isolates sudden institutional surges from normal background noise.
+    """
+    global _prev_tvd_state
+
+    try:
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return 0.0
+        if not info.visible:
+            mt5.symbol_select(symbol, True)
+
+        # 11 bars = 10 closed + 1 forming
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, 11)
+        if rates is None or len(rates) < 11:
+            return 0.0
+
+        # Use only the 10 closed candles (index 0-9), skip the forming bar (index 10)
+        closed = rates[:10]
+
+        # Compute signed flow for each candle
+        signed_flows = []
+        for bar in closed:
+            price_delta = float(bar['close']) - float(bar['open'])
+            tick_vol = float(bar['tick_volume'])
+            signed_flows.append(price_delta * tick_vol)
+
+        # Split: recent 3 candles vs baseline 7 candles
+        baseline = signed_flows[:7]
+        recent = signed_flows[7:]  # last 3 closed candles
+
+        baseline_mean = sum(baseline) / len(baseline) if baseline else 0.0
+        recent_sum = sum(recent)
+
+        # OFI = recent institutional flow minus expected baseline flow
+        ofi = recent_sum - (baseline_mean * len(recent))
+
+        # Normalize by baseline magnitude to get a scale-independent signal
+        # This makes OFI comparable across XAUUSD ($3300) vs EURUSD ($1.13)
+        baseline_magnitude = sum(abs(f) for f in baseline) / len(baseline) if baseline else 1.0
+        if baseline_magnitude > 0:
+            normalized_ofi = ofi / baseline_magnitude * 100
+        else:
+            normalized_ofi = 0.0
+
+        return round(normalized_ofi, 1)
+
+    except Exception as e:
+        print(f"[OFI-TVD] Error computing tick-volume OFI for {symbol}: {e}")
+        return 0.0
+
+
+def calculate_order_flow_imbalance(symbol: str) -> float:
+    """
+    Computes instantaneous Order Flow Imbalance (OFI).
+
+    Primary: MT5 Depth of Market (DOM) for exchange-traded instruments.
+    Fallback: Tick-Volume-Weighted Price Delta for Forex/CFD brokers.
+
+    Positive value = Aggressive institutional buying pressure.
+    Negative value = Toxic order flow / Institutional distribution.
+    """
+    # Try DOM-based OFI first (only works on exchange instruments)
+    dom_available, dom_ofi = _try_dom_ofi(symbol)
+
+    if dom_available:
+        print(f"[OFI] {symbol}: DOM-based OFI={dom_ofi:+.0f} (L2 Order Book)")
+        return dom_ofi
+
+    # Fallback: Tick-volume-weighted price delta (works on ALL brokers)
+    tvd_ofi = _tick_volume_delta_ofi(symbol)
+    return tvd_ofi
+
+
+# =============================================================================
+# VPIN SENSOR — Volume-Synchronized Probability of Informed Trading
+# =============================================================================
+# Detects when informed institutional traders are aggressively absorbing
+# liquidity using Bulk Volume Classification (BVC) over volume-synchronized
+# buckets. High VPIN = toxic informed flow = potential adverse selection.
+#
+# Algorithm:
+#   1. Fetch N M1 candles with tick volume
+#   2. BVC: classify each candle's volume as buy/sell based on price position
+#      buy_vol = tick_volume × (close - low) / (high - low)
+#      sell_vol = tick_volume - buy_vol
+#   3. Accumulate into fixed-size volume buckets (not time-based)
+#   4. VPIN = mean(|buy_vol - sell_vol| / bucket_size) across last K buckets
+#   5. Range: 0.0 (balanced) to 1.0 (fully one-sided / toxic)
+# =============================================================================
+
+def calculate_vpin(symbol: str, num_candles: int = 50, num_buckets: int = 10) -> dict:
+    """
+    Computes VPIN (Volume-Synchronized Probability of Informed Trading).
+
+    Uses Bulk Volume Classification (BVC) on M1 candles to detect when
+    institutional informed traders are aggressively absorbing liquidity.
+
+    Args:
+        symbol: MT5 symbol name
+        num_candles: Number of M1 candles to process (default 50)
+        num_buckets: Number of volume-synchronized buckets to average (default 10)
+
+    Returns:
+        {
+            "vpin": float (0.0 to 1.0),
+            "is_toxic": bool (True if vpin >= 0.70),
+            "dominant_side": "BUY" | "SELL" | "BALANCED",
+            "bucket_count": int
+        }
+    """
+    _default = {"vpin": 0.0, "is_toxic": False, "dominant_side": "BALANCED", "bucket_count": 0}
+
+    try:
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return _default
+        if not info.visible:
+            mt5.symbol_select(symbol, True)
+
+        # Fetch M1 candles (num_candles + 1 to skip the forming bar)
+        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, num_candles + 1)
+        if rates is None or len(rates) < num_candles + 1:
+            return _default
+
+        # Use only closed candles (skip the last forming bar)
+        closed = rates[:num_candles]
+
+        # Step 1: Bulk Volume Classification (BVC)
+        # For each candle, classify volume as buy or sell
+        classified = []
+        total_volume = 0
+        for bar in closed:
+            tick_vol = float(bar['tick_volume'])
+            high = float(bar['high'])
+            low = float(bar['low'])
+            close = float(bar['close'])
+
+            if tick_vol <= 0:
+                continue
+
+            candle_range = high - low
+            if candle_range > 0:
+                # BVC formula: buy fraction = (close - low) / (high - low)
+                buy_fraction = (close - low) / candle_range
+            else:
+                # Doji / zero-range candle: split 50/50
+                buy_fraction = 0.5
+
+            buy_vol = tick_vol * buy_fraction
+            sell_vol = tick_vol * (1.0 - buy_fraction)
+
+            classified.append({"buy": buy_vol, "sell": sell_vol, "total": tick_vol})
+            total_volume += tick_vol
+
+        if not classified or total_volume <= 0:
+            return _default
+
+        # Step 2: Volume-Synchronized Buckets
+        # Each bucket holds a fixed volume = total_volume / num_buckets
+        target_bucket_size = total_volume / max(num_buckets, 1)
+        if target_bucket_size <= 0:
+            return _default
+
+        buckets = []
+        bucket_buy = 0.0
+        bucket_sell = 0.0
+        bucket_vol = 0.0
+
+        for bar_data in classified:
+            remaining_buy = bar_data["buy"]
+            remaining_sell = bar_data["sell"]
+            remaining_total = bar_data["total"]
+
+            while remaining_total > 0:
+                space_left = target_bucket_size - bucket_vol
+
+                if remaining_total <= space_left:
+                    # Entire bar fits in the current bucket
+                    bucket_buy += remaining_buy
+                    bucket_sell += remaining_sell
+                    bucket_vol += remaining_total
+                    remaining_total = 0
+                else:
+                    # Split the bar across bucket boundary
+                    fill_fraction = space_left / remaining_total if remaining_total > 0 else 0
+                    bucket_buy += remaining_buy * fill_fraction
+                    bucket_sell += remaining_sell * fill_fraction
+                    bucket_vol += space_left
+
+                    remaining_buy *= (1.0 - fill_fraction)
+                    remaining_sell *= (1.0 - fill_fraction)
+                    remaining_total -= space_left
+
+                # Check if bucket is full
+                if bucket_vol >= target_bucket_size * 0.999:
+                    buckets.append({
+                        "buy": bucket_buy,
+                        "sell": bucket_sell,
+                        "total": bucket_vol,
+                        "imbalance": abs(bucket_buy - bucket_sell) / bucket_vol if bucket_vol > 0 else 0
+                    })
+                    bucket_buy = 0.0
+                    bucket_sell = 0.0
+                    bucket_vol = 0.0
+
+        if not buckets:
+            return _default
+
+        # Step 3: VPIN = mean absolute imbalance across all buckets
+        # Use the most recent N buckets
+        recent_buckets = buckets[-num_buckets:]
+        vpin = sum(b["imbalance"] for b in recent_buckets) / len(recent_buckets)
+        vpin = round(min(1.0, max(0.0, vpin)), 3)
+
+        # Determine dominant side from the most recent buckets
+        total_recent_buy = sum(b["buy"] for b in recent_buckets)
+        total_recent_sell = sum(b["sell"] for b in recent_buckets)
+
+        if total_recent_buy > total_recent_sell * 1.15:
+            dominant = "BUY"
+        elif total_recent_sell > total_recent_buy * 1.15:
+            dominant = "SELL"
+        else:
+            dominant = "BALANCED"
+
+        is_toxic = vpin >= 0.70
+
+        return {
+            "vpin": vpin,
+            "is_toxic": is_toxic,
+            "dominant_side": dominant,
+            "bucket_count": len(recent_buckets)
+        }
+
+    except Exception as e:
+        print(f"[VPIN] Error computing VPIN for {symbol}: {e}")
+        return _default
 

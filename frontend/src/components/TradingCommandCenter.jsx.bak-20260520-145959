@@ -8,34 +8,37 @@ import {
 import { AdvancedRealTimeChart } from 'react-ts-tradingview-widgets';
 import { API_BASE } from '../lib/api';
 
-const USD_TO_INR = 85;
+const USDT_TO_INR = 85;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// FOREX SESSION ENGINE — Live Asia / London / New York detection (UTC-based)
-const FOREX_SESSIONS = [
-  { id: 'sydney', label: 'Sydney Session', emoji: '🦘', open: 22, close: 7, color: 'blue', gradient: 'from-blue-500 to-indigo-600', glow: 'rgba(59,130,246,0.6)', bg: 'blue-500' },
-  { id: 'asian', label: 'Asian/Tokyo', emoji: '🌏', open: 23, close: 8, color: 'purple', gradient: 'from-purple-500 to-fuchsia-600', glow: 'rgba(168,85,247,0.6)', bg: 'purple-500' },
-  { id: 'london',  label: 'London Session', emoji: '🇬🇧', open: 7, close: 16, color: 'cyan', gradient: 'from-cyan-500 to-blue-600', glow: 'rgba(6,182,212,0.8)', bg: 'cyan-500' },
-  { id: 'newyork',   label: 'New York Session', emoji: '🇺🇸', open: 12, close: 21, color: 'amber', gradient: 'from-amber-400 to-orange-500', glow: 'rgba(245,158,11,0.8)', bg: 'amber-500' },
+// SMC KILLZONE ENGINE — Strict New York Time (EST/EDT)
+// ═══════════════════════════════════════════════════════════════════════════
+const SMC_KILLZONES = [
+  { id: 'london',  label: 'London KZ', emoji: '🇬🇧', open: 2.0,  close: 5.0,  color: 'cyan',   gradient: 'from-cyan-500 to-blue-600',     glow: 'rgba(6,182,212,0.6)',   bg: 'cyan-500'   },
+  { id: 'ny_am',   label: 'NY AM KZ',  emoji: '🇺🇸', open: 9.5,  close: 11.0, color: 'amber',  gradient: 'from-amber-500 to-orange-600',  glow: 'rgba(245,158,11,0.6)', bg: 'amber-500'  },
+  { id: 'ny_pm',   label: 'NY PM KZ',  emoji: '🇺🇸', open: 13.5, close: 16.0, color: 'purple', gradient: 'from-purple-500 to-pink-600',   glow: 'rgba(168,85,247,0.6)', bg: 'purple-500' },
 ];
 
 const getActiveSessions = () => {
+  // Force calculation in pure New York Time
   const now = new Date();
-  const utcH = now.getUTCHours();
-  const utcM = now.getUTCMinutes();
-  const utcDecimal = utcH + utcM / 60;
+  const nyStr = now.toLocaleString("en-US", {timeZone: "America/New_York"});
+  const nyDate = new Date(nyStr);
+  
+  const nyH = nyDate.getHours();
+  const nyM = nyDate.getMinutes();
+  const nyDecimal = nyH + nyM / 60.0;
 
-  const active = FOREX_SESSIONS.filter(s => {
-    if (s.open < s.close) return utcDecimal >= s.open && utcDecimal < s.close;
-    return utcDecimal >= s.open || utcDecimal < s.close; // wraps midnight
+  const active = SMC_KILLZONES.filter(s => {
+    return nyDecimal >= s.open && nyDecimal < s.close;
   });
 
   // Find next session opening
   let nextSession = null;
   let minMinutes = Infinity;
-  for (const s of FOREX_SESSIONS) {
+  for (const s of SMC_KILLZONES) {
     if (active.find(a => a.id === s.id)) continue;
-    let diff = (s.open * 60) - (utcH * 60 + utcM);
+    let diff = (s.open * 60) - (nyH * 60 + nyM);
     if (diff <= 0) diff += 24 * 60;
     if (diff < minMinutes) {
       minMinutes = diff;
@@ -45,24 +48,23 @@ const getActiveSessions = () => {
 
   // Compute progress & time remaining for each active session
   const enriched = active.map(s => {
-    const duration = (s.close > s.open ? s.close - s.open : 24 - s.open + s.close) * 60;
-    let elapsed = (utcH * 60 + utcM) - s.open * 60;
-    if (elapsed < 0) elapsed += 24 * 60;
+    const duration = (s.close - s.open) * 60;
+    let elapsed = (nyH * 60 + nyM) - s.open * 60;
     const remaining = duration - elapsed;
     const progress = Math.min(100, (elapsed / duration) * 100);
     const remH = Math.floor(remaining / 60);
-    const remM = remaining % 60;
+    const remM = Math.floor(remaining % 60);
     return { ...s, progress, remainingStr: `${remH}h ${remM}m`, remainingMin: remaining };
   });
 
   const nextH = nextSession ? Math.floor(minMinutes / 60) : 0;
-  const nextM = nextSession ? minMinutes % 60 : 0;
+  const nextM = nextSession ? Math.floor(minMinutes % 60) : 0;
 
   return {
     active: enriched,
     nextSession,
     nextIn: nextSession ? `${nextH}h ${nextM}m` : null,
-    utcTime: `${String(utcH).padStart(2,'0')}:${String(utcM).padStart(2,'0')}`,
+    nyTime: `${String(nyH).padStart(2,'0')}:${String(nyM).padStart(2,'0')}`,
     isOffMarket: enriched.length === 0,
   };
 };
@@ -101,9 +103,28 @@ const AnimatedPrice = ({ value, prefix = "$", className = "" }) => {
 };
 
 const MACRO_ASSETS = [
+  // ── Precious Metals ──
   { id: 'GOLD.i#', symbol: 'OANDA:XAUUSD', label: 'Gold (XAUUSD)' },
   { id: 'SILVER.i#', symbol: 'OANDA:XAGUSD', label: 'Silver (XAGUSD)' },
+  { id: 'XAUEUR.i#', symbol: 'OANDA:XAUEUR', label: 'Gold/EUR (XAUEUR)' },
+  { id: 'XAUJPY.i#', symbol: 'TVC:XAUJPY', label: 'Gold/JPY (XAUJPY)' },
+  { id: 'GAUUSD.i#', symbol: 'OANDA:XAUUSD', label: 'Gold Alt (GAUUSD)' },
+  // ── Indices ──
   { id: 'US30Cash#', symbol: 'FOREXCOM:DJI', label: 'US30 (Dow)' },
+  { id: 'US100Cash#', symbol: 'PEPPERSTONE:NAS100', label: 'US100 (Nasdaq)' },
+  { id: 'US500Cash#', symbol: 'FOREXCOM:SPX500', label: 'US500 (S&P)' },
+  { id: 'JP225Cash#', symbol: 'TVC:NI225', label: 'JP225 (Nikkei)' },
+  { id: 'GER40Cash#', symbol: 'PEPPERSTONE:GER40', label: 'GER40 (DAX)' },
+  // ── Energy ──
+  { id: 'OILCash#', symbol: 'TVC:USOIL', label: 'WTI Oil' },
+  { id: 'BRENTCash#', symbol: 'TVC:UKOIL', label: 'Brent Oil' },
+  // ── Crypto ──
+  { id: 'BTCUSD#', symbol: 'INDEX:BTCUSD', label: 'BTC/USD' },
+  { id: 'ETHUSD#', symbol: 'INDEX:ETHUSD', label: 'ETH/USD' },
+  { id: 'BTCJPY#', symbol: 'BITFINEX:BTCJPY', label: 'BTC/JPY' },
+  { id: 'XRPUSD#', symbol: 'BINANCE:XRPUSDT', label: 'XRP/USD' },
+  { id: 'ENJUSD#', symbol: 'BINANCE:ENJUSDT', label: 'ENJ/USD' },
+  // ── Forex Majors ──
   { id: 'EURUSD#', symbol: 'OANDA:EURUSD', label: 'EUR/USD' },
   { id: 'GBPUSD#', symbol: 'OANDA:GBPUSD', label: 'GBP/USD' },
   { id: 'USDJPY#', symbol: 'OANDA:USDJPY', label: 'USD/JPY' },
@@ -111,75 +132,42 @@ const MACRO_ASSETS = [
   { id: 'USDCAD#', symbol: 'OANDA:USDCAD', label: 'USD/CAD' },
   { id: 'USDCHF#', symbol: 'OANDA:USDCHF', label: 'USD/CHF' },
   { id: 'NZDUSD#', symbol: 'OANDA:NZDUSD', label: 'NZD/USD' },
+  // ── Forex Crosses ──
   { id: 'EURGBP#', symbol: 'OANDA:EURGBP', label: 'EUR/GBP' },
   { id: 'GBPJPY#', symbol: 'OANDA:GBPJPY', label: 'GBP/JPY' },
+  { id: 'EURJPY#', symbol: 'OANDA:EURJPY', label: 'EUR/JPY' },
+  { id: 'AUDCAD#', symbol: 'OANDA:AUDCAD', label: 'AUD/CAD' },
+  { id: 'AUDJPY#', symbol: 'OANDA:AUDJPY', label: 'AUD/JPY' },
+  { id: 'EURAUD#', symbol: 'OANDA:EURAUD', label: 'EUR/AUD' },
+  { id: 'GBPCAD#', symbol: 'OANDA:GBPCAD', label: 'GBP/CAD' },
+  { id: 'EURNZD#', symbol: 'OANDA:EURNZD', label: 'EUR/NZD' },
+  { id: 'EURCHF#', symbol: 'OANDA:EURCHF', label: 'EUR/CHF' },
+  { id: 'AUDNZD#', symbol: 'OANDA:AUDNZD', label: 'AUD/NZD' },
+  { id: 'GBPAUD#', symbol: 'OANDA:GBPAUD', label: 'GBP/AUD' },
+  { id: 'CHFJPY#', symbol: 'OANDA:CHFJPY', label: 'CHF/JPY' },
+  { id: 'EURCAD#', symbol: 'OANDA:EURCAD', label: 'EUR/CAD' },
+  { id: 'CADJPY#', symbol: 'OANDA:CADJPY', label: 'CAD/JPY' },
+  { id: 'NZDCAD#', symbol: 'OANDA:NZDCAD', label: 'NZD/CAD' },
+  { id: 'NZDJPY#', symbol: 'OANDA:NZDJPY', label: 'NZD/JPY' },
 ];
 
-const tvSymbolMap = { 
-  "GOLD.i#": "OANDA:XAUUSD", 
-  "GOLD#": "OANDA:XAUUSD",
-  "XAUUSD#": "OANDA:XAUUSD",
-  "XAUUSD.i#": "OANDA:XAUUSD",
-  "XAUUSD.x": "OANDA:XAUUSD",
-  "XAUUSD": "OANDA:XAUUSD",
-  "GOLD.x": "OANDA:XAUUSD",
-  "GOLD": "OANDA:XAUUSD",
-  "SILVER.i#": "OANDA:XAGUSD",
-  "SILVER#": "OANDA:XAGUSD",
-  "XAGUSD#": "OANDA:XAGUSD",
-  "XAGUSD.i#": "OANDA:XAGUSD",
-  "XAGUSD.x": "OANDA:XAGUSD",
-  "XAGUSD": "OANDA:XAGUSD",
-  "SILVER.x": "OANDA:XAGUSD",
-  "SILVER": "OANDA:XAGUSD",
-  "EURUSD#": "OANDA:EURUSD",
-  "EURUSD.i#": "OANDA:EURUSD", 
-  "EURUSD.x": "OANDA:EURUSD",
-  "EURUSD": "OANDA:EURUSD",
-  "GBPUSD#": "OANDA:GBPUSD",
-  "GBPUSD.i#": "OANDA:GBPUSD",
-  "GBPUSD.x": "OANDA:GBPUSD",
-  "GBPUSD": "OANDA:GBPUSD",
-  "USDJPY#": "OANDA:USDJPY",
-  "USDJPY.i#": "OANDA:USDJPY",
-  "USDJPY.x": "OANDA:USDJPY",
-  "USDJPY": "OANDA:USDJPY",
-  "US30Cash#": "FOREXCOM:DJI",
-  "US30.i#": "FOREXCOM:DJI",
-  "US30#": "FOREXCOM:DJI",
-  "US30.x": "FOREXCOM:DJI",
-  "US30": "FOREXCOM:DJI",
-  "AUDUSD#": "OANDA:AUDUSD",
-  "AUDUSD.i#": "OANDA:AUDUSD",
-  "AUDUSD.x": "OANDA:AUDUSD",
-  "AUDUSD": "OANDA:AUDUSD",
-  "NZDUSD#": "OANDA:NZDUSD",
-  "NZDUSD.i#": "OANDA:NZDUSD",
-  "NZDUSD.x": "OANDA:NZDUSD",
-  "NZDUSD": "OANDA:NZDUSD",
-  "USDCAD#": "OANDA:USDCAD",
-  "USDCAD.i#": "OANDA:USDCAD",
-  "USDCAD.x": "OANDA:USDCAD",
-  "USDCAD": "OANDA:USDCAD",
-  "EURGBP#": "OANDA:EURGBP",
-  "EURGBP.i#": "OANDA:EURGBP",
-  "EURGBP.x": "OANDA:EURGBP",
-  "EURGBP": "OANDA:EURGBP",
-  "USDCHF#": "OANDA:USDCHF",
-  "USDCHF.i#": "OANDA:USDCHF",
-  "USDCHF.x": "OANDA:USDCHF",
-  "USDCHF": "OANDA:USDCHF",
-  "GBPJPY#": "OANDA:GBPJPY",
-  "GBPJPY.i#": "OANDA:GBPJPY",
-  "GBPJPY.x": "OANDA:GBPJPY",
-  "GBPJPY": "OANDA:GBPJPY",
-};
+const tvSymbolMap = Object.fromEntries(
+  MACRO_ASSETS.flatMap(a => {
+    const base = a.id.replace(/\.i#$/i, '').replace(/#$/g, '').replace(/\.i$/i, '').toUpperCase();
+    return [
+      [a.id, a.symbol],
+      [base + '#', a.symbol],
+      [base + '.i#', a.symbol],
+      [base, a.symbol],
+    ];
+  })
+);
 
 const normalizeBrokerSymbol = (symbol = '') => {
   const clean = String(symbol).trim().toUpperCase();
   if (!clean) return '';
   if (clean.includes('GOLD')) return 'GOLD';
-  return clean.replace(/\.I#$/i, '').replace(/#$/g, '').replace(/\.I$/i, '').replace(/\.X$/i, '').replace(/\.x$/i, '');
+  return clean.replace(/\.I#$/i, '').replace(/#$/g, '').replace(/\.I$/i, '');
 };
 
 const getTradingViewSymbol = (symbol, fallback = 'OANDA:XAUUSD') => {
@@ -210,34 +198,15 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
     return () => clearInterval(id);
   }, []);
 
-  const dynamicAssets = useMemo(() => {
-    const assets = [...MACRO_ASSETS];
-    const existingIds = new Set(assets.map(a => a.id));
-    const fleet = localMarketData?.fleet_symbols || [];
-    
-    fleet.forEach(sym => {
-      const normId = normalizeBrokerSymbol(sym);
-      if (!existingIds.has(sym) && !assets.find(a => normalizeBrokerSymbol(a.id) === normId)) {
-        assets.push({
-          id: sym,
-          symbol: getTradingViewSymbol(sym),
-          label: sym.replace(/\.x$/i, '').replace(/\.i$/i, '').replace(/#$/g, '')
-        });
-        existingIds.add(sym);
-      }
-    });
-    return assets;
-  }, [localMarketData?.fleet_symbols]);
-
   useEffect(() => {
     const radarSymbol = localMarketData.active_symbol;
     if (!radarSymbol) return;
     const normalizedRadarSymbol = normalizeBrokerSymbol(radarSymbol);
-    const mapped = dynamicAssets.find((a) => a.id === radarSymbol || normalizeBrokerSymbol(a.id) === normalizedRadarSymbol);
+    const mapped = MACRO_ASSETS.find((a) => a.id === radarSymbol || normalizeBrokerSymbol(a.id) === normalizedRadarSymbol);
     if (mapped && mapped.id !== activeChartAsset.id) {
       setActiveChartAsset(mapped);
     }
-  }, [localMarketData.active_symbol, activeChartAsset.id, dynamicAssets]);
+  }, [localMarketData.active_symbol, activeChartAsset.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -282,8 +251,8 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
   const matrixScores = macroMatrix.scores || {};
 
   const uniqueActiveSymbols = useMemo(() => {
-    // MT5 positions are always active if they exist — no 'status' field
-    return [...new Set(positions.map(p => p.symbol))];
+    const active = positions.filter(p => p.status === 'active');
+    return [...new Set(active.map(p => p.symbol))];
   }, [positions]);
 
   const getDecisionColor = (d) => {
@@ -300,21 +269,24 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
   };
 
   const getPositionSL = (pos) => {
-    const trail = Object.values(stepTrail).find(t => String(t.ticket) === String(pos.ticket || pos.symbol));
+    const key = `${pos.account}:${pos.ticket || pos.symbol}`;
+    const trail = stepTrail[key];
     if (trail && trail.sl > 0) return trail.sl;
     if (pos.sl > 0) return pos.sl;
     return null;
   };
 
   const getPositionTP = (pos) => {
-    const trail = Object.values(stepTrail).find(t => String(t.ticket) === String(pos.ticket || pos.symbol));
+    const key = `${pos.account}:${pos.ticket || pos.symbol}`;
+    const trail = stepTrail[key];
     if (trail && trail.tp > 0) return trail.tp;
     if (pos.tp > 0) return pos.tp;
     return null;
   };
 
   const getPositionTrailTier = (pos) => {
-    const trail = Object.values(stepTrail).find(t => String(t.ticket) === String(pos.ticket || pos.symbol));
+    const key = `${pos.account}:${pos.ticket || pos.symbol}`;
+    const trail = stepTrail[key];
     if (trail) return trail.tier || 0;
     return pos.trail_tier || 0;
   };
@@ -328,10 +300,10 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
           <div className="flex flex-wrap items-center gap-3 mb-2">
             <select 
               value={activeChartAsset.id}
-              onChange={(e) => setActiveChartAsset(dynamicAssets.find(a => a.id === e.target.value))}
+              onChange={(e) => setActiveChartAsset(MACRO_ASSETS.find(a => a.id === e.target.value))}
               className="max-w-full text-2xl font-black font-heading text-white tracking-tight bg-transparent border-b-2 border-white/20 focus:outline-none focus:border-cyan-400 cursor-pointer pb-1"
             >
-              {dynamicAssets.map(asset => (
+              {MACRO_ASSETS.map(asset => (
                 <option key={asset.id} value={asset.id} className="bg-slate-900 text-sm font-sans">{asset.label}</option>
               ))}
             </select>
@@ -354,7 +326,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               </span>
             )) : (
               <span className="px-3 py-1 bg-slate-700/30 text-slate-500 text-xs rounded-full border border-slate-600/30 uppercase font-bold tracking-widest">
-                💤 Off-Market
+                💤 Dead Zone
               </span>
             )}
             {/* FIX #1: Show when AI radar overrides the manual selection */}
@@ -494,7 +466,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">Session Clock</p>
               <div className="flex items-center gap-1.5">
                 <Clock className="w-3 h-3 text-slate-500" />
-                <span className="text-[10px] text-slate-400 font-mono font-bold">{sessionData.utcTime} UTC</span>
+                <span className="text-[10px] text-slate-400 font-mono font-bold">{sessionData.nyTime} NY</span>
               </div>
             </div>
             {sessionData.active.length > 0 ? (
@@ -525,7 +497,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
               </div>
             ) : (
               <div className="text-center py-1">
-                <p className="text-lg font-black font-heading text-slate-600">💤 Off-Market</p>
+                <p className="text-lg font-black font-heading text-slate-600">💤 Dead Zone</p>
                 {sessionData.nextSession && (
                   <p className="text-[10px] text-slate-500 mt-1">
                     Next: <span className="text-white font-bold">{sessionData.nextSession.emoji} {sessionData.nextSession.label}</span> in <span className="text-cyan-400 font-bold">{sessionData.nextIn}</span>
@@ -562,9 +534,9 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
         <div className="col-span-12 lg:col-span-8 glass-card rounded-[2.5rem] p-4 overflow-hidden shadow-2xl relative">
           <div className="h-[600px] w-full rounded-3xl overflow-hidden bg-[#050505]">
             <AdvancedRealTimeChart 
-              key={`main-chart-${activeChartAsset.id}`}
+              key={`main-chart-${getTradingViewSymbol(localMarketData.active_symbol, activeChartAsset.symbol || "OANDA:XAUUSD")}`}
               theme="dark" 
-              symbol={getTradingViewSymbol(activeChartAsset.id, activeChartAsset.symbol || "OANDA:XAUUSD")}
+              symbol={getTradingViewSymbol(localMarketData.active_symbol, activeChartAsset.symbol || "OANDA:XAUUSD")}
               autosize
               interval="15"
               timezone="Etc/UTC"
@@ -680,6 +652,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {uniqueActiveSymbols.map(sym => {
                  let tvSymbol = getTradingViewSymbol(sym);
+                 if(String(sym).includes('BTC')) tvSymbol = 'INDEX:BTCUSD';
                  
                  return (
                    <div key={sym} className="h-[250px] rounded-2xl overflow-hidden border border-white/10 bg-[#050505]">
@@ -709,7 +682,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
             </div>
             <div>
               <h3 className="text-2xl font-black font-heading text-white">MT5 Positions Basket</h3>
-              <p className="text-sm text-slate-400 font-bold uppercase tracking-wider">{positions.length} Active Contracts</p>
+              <p className="text-sm text-slate-400 font-bold uppercase tracking-wider">{positions.filter(p => p.status === 'active').length} Active Contracts</p>
             </div>
           </div>
           
@@ -728,7 +701,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
             
             {/* CLOSE ALL PROFITABLE BUTTON */}
             {(() => {
-              const profitableCount = positions.filter(p => Number(p.pnl || 0) >= 0).length;
+              const profitableCount = positions.filter(p => p.status === 'active' && Number(p.pnl || 0) >= 0).length;
               return (
                 <div className="flex flex-col items-center gap-1">
                   <button
@@ -839,7 +812,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
                       <td className="py-5">
                         <div className="flex items-center space-x-3">
                           <span className="font-black font-heading text-white text-lg">{pos.symbol}</span>
-                          <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
+                          {pos.status === 'active' && <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_10px_rgba(52,211,153,0.8)]" />}
                         </div>
                         <span className="text-xs text-slate-500 font-bold uppercase tracking-wider">{pos.account}</span>
                       </td>
@@ -850,16 +823,16 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
                           {side}
                         </span>
                       </td>
-                      <td className="py-5 text-base text-white font-mono font-bold">{Math.abs(pos.qty || pos.volume || 0)}</td>
-                      <td className="py-5 text-base text-white font-mono font-bold">${(pos.entry || pos.entry_price)?.toFixed(5) || '—'}</td>
+                      <td className="py-5 text-base text-white font-mono font-bold">{Math.abs(pos.qty)}</td>
+                      <td className="py-5 text-base text-white font-mono font-bold">${pos.entry?.toFixed(5) || '—'}</td>
                       <td className="py-5 text-base text-slate-300 font-mono">
-                        <AnimatedPrice value={pos.current || pos.mark_price || assetMarketData.last_price || 0} />
+                        <AnimatedPrice value={pos.current || assetMarketData.last_price || 0} />
                         <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse inline-block ml-1.5 align-middle" title="Live" />
                       </td>
                       <td className={`py-5 text-lg font-black font-heading ${netPnl >= 0 ? 'text-emerald-400' : 'text-pink-500'}`}>
                         {netPnl >= 0 ? '+' : ''}${netPnl.toFixed(2)}
                         <span className={`block text-[10px] font-medium ${netPnl >= 0 ? 'text-emerald-600' : 'text-pink-600'}`}>
-                          ₹{(netPnl * (inrRate || USD_TO_INR)).toLocaleString(undefined, {maximumFractionDigits: 0})}
+                          ₹{(netPnl * (inrRate || USDT_TO_INR)).toLocaleString(undefined, {maximumFractionDigits: 0})}
                         </span>
                       </td>
                       <td className="py-5">

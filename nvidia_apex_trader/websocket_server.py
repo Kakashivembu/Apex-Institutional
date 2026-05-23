@@ -10,7 +10,7 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+NVIDIA_API_KEY_3 = os.getenv("NVIDIA_API_KEY_3", "")
 
 api_keys_storage = []
 

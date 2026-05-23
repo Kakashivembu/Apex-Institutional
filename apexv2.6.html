@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apex Institutional v2.6 | AI Trading Architecture</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800;900&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- AOS Animation Library -->
+    <link href="https://unpkg.com/aos@2.3.1/dist/aos.css" rel="stylesheet">
+    <script src="https://unpkg.com/aos@2.3.1/dist/aos.js"></script>
+
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        display: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            400: '#38bdf8',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            accent: '#ff0055',
+                            dark: '#030712',
+                            card: 'rgba(17, 24, 39, 0.7)'
+                        }
+                    },
+                    animation: {
+                        'blob': 'blob 10s infinite',
+                        'float': 'float 6s ease-in-out infinite',
+                        'glow': 'glow 3s ease-in-out infinite alternate',
+                    },
+                    keyframes: {
+                        blob: {
+                            '0%': { transform: 'translate(0px, 0px) scale(1)' },
+                            '33%': { transform: 'translate(30px, -50px) scale(1.1)' },
+                            '66%': { transform: 'translate(-20px, 20px) scale(0.9)' },
+                            '100%': { transform: 'translate(0px, 0px) scale(1)' },
+                        },
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-20px)' },
+                        },
+                        glow: {
+                            '0%': { boxShadow: '0 0 10px #ff0055, 0 0 20px #ff0055' },
+                            '100%': { boxShadow: '0 0 20px #ff0055, 0 0 30px #ff0055' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #030712;
+            color: #f8fafc;
+            overflow-x: hidden;
+        }
+
+        /* Animated Grid Background */
+        .bg-grid {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-size: 50px 50px;
+            background-image: 
+                linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            z-index: -2;
+            transform: perspective(500px) rotateX(60deg) translateY(-100px) translateZ(-200px);
+            animation: grid-move 20s linear infinite;
+        }
+
+        @keyframes grid-move {
+            0% { transform: perspective(500px) rotateX(60deg) translateY(0) translateZ(-200px); }
+            100% { transform: perspective(500px) rotateX(60deg) translateY(50px) translateZ(-200px); }
+        }
+
+        /* Glassmorphism Classes */
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        .glass-card {
+            background: linear-gradient(145deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.9) 100%);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .glass-card:hover {
+            transform: translateY(-5px);
+            border-color: rgba(255, 0, 85, 0.3);
+            box-shadow: 0 20px 40px -10px rgba(255, 0, 85, 0.15);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #030712;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #ff0055;
+        }
+
+        /* Gradient Text */
+        .text-gradient {
+            background: linear-gradient(to right, #ffffff, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .text-gradient-accent {
+            background: linear-gradient(to right, #ff0055, #ff4d85);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+    </style>
+</head>
+<body class="antialiased selection:bg-brand-accent selection:text-white relative">
+
+    <!-- Background Animations -->
+    <div class="bg-grid"></div>
+    
+    <div class="fixed top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
+        <div class="absolute top-[-10%] left-[-10%] w-96 h-96 bg-brand-accent/20 rounded-full mix-blend-screen filter blur-[100px] opacity-50 animate-blob"></div>
+        <div class="absolute top-[20%] right-[-10%] w-[500px] h-[500px] bg-blue-600/20 rounded-full mix-blend-screen filter blur-[120px] opacity-40 animate-blob animation-delay-2000"></div>
+        <div class="absolute bottom-[-20%] left-[20%] w-[600px] h-[600px] bg-purple-600/20 rounded-full mix-blend-screen filter blur-[150px] opacity-30 animate-blob animation-delay-4000"></div>
+    </div>
+
+    <!-- Navigation -->
+    <nav class="fixed w-full z-50 glass-panel border-b-0 border-white/5 transition-all duration-300 py-4">
+        <div class="max-w-7xl mx-auto px-6 flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-gradient-to-br from-brand-accent to-purple-600 rounded-xl flex items-center justify-center animate-glow">
+                    <i class="fa-solid fa-bolt text-white"></i>
+                </div>
+                <span class="font-display font-bold text-xl tracking-wider text-white">APEX<span class="text-brand-accent">v2.6</span></span>
+            </div>
+            <div class="hidden md:flex gap-6 text-sm font-medium text-slate-300">
+                <a href="#agents" class="hover:text-white transition-colors">3-Agent Core</a>
+                <a href="#data" class="hover:text-white transition-colors">Data Ingestion</a>
+                <a href="#gates" class="hover:text-white transition-colors">7 Execution Gates</a>
+                <a href="#risk" class="hover:text-white transition-colors">Risk & R:R</a>
+            </div>
+            <button class="md:hidden text-slate-300 hover:text-white">
+                <i class="fa-solid fa-bars text-2xl"></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="relative min-h-screen flex items-center justify-center pt-20 px-4">
+        <div class="max-w-5xl mx-auto text-center z-10">
+            <div data-aos="fade-down" data-aos-duration="1000" class="inline-flex items-center gap-2 px-4 py-2 rounded-full glass-panel border-brand-accent/30 text-brand-accent text-sm font-semibold mb-8">
+                <span class="relative flex h-3 w-3">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-accent opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-3 w-3 bg-brand-accent"></span>
+                </span>
+                SYSTEM FULLY ARMED
+            </div>
+            
+            <h1 data-aos="zoom-in" data-aos-duration="1200" class="text-5xl md:text-7xl font-display font-black leading-tight mb-6">
+                Institutional Grade <br/>
+                <span class="text-gradient-accent">Execution Matrix</span>
+            </h1>
+            
+            <p data-aos="fade-up" data-aos-delay="200" data-aos-duration="1000" class="text-lg md:text-xl text-slate-400 max-w-4xl mx-auto mb-12 font-light leading-relaxed">
+                Apex v2.6 utilizes a 3-agent multi-model LLM consensus pipeline powered by NVIDIA NIM. It evaluates real-time OFI, VPIN, and Smart Money Concepts, passing through 7 strict execution gates to guarantee a minimum 1.5 R:R ratio.
+            </p>
+            
+            <div data-aos="fade-up" data-aos-delay="400" class="flex flex-col sm:flex-row items-center justify-center gap-6">
+                <a href="#gates" class="px-8 py-4 bg-brand-accent text-white rounded-xl font-semibold hover:bg-brand-accent/80 transition-all shadow-[0_0_20px_rgba(255,0,85,0.4)] hover:shadow-[0_0_30px_rgba(255,0,85,0.6)] w-full sm:w-auto">
+                    View Execution Gates
+                </a>
+                <a href="#risk" class="px-8 py-4 glass-panel text-white rounded-xl font-semibold hover:bg-white/10 transition-all w-full sm:w-auto flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-shield-halved"></i> Risk Architecture
+                </a>
+            </div>
+        </div>
+
+        <div class="absolute bottom-10 left-1/2 transform -translate-x-1/2 animate-bounce opacity-50">
+            <i class="fa-solid fa-chevron-down text-2xl"></i>
+        </div>
+    </section>
+
+    <!-- Trust Badges -->
+    <section class="py-6 border-y border-white/5 bg-[#010308]/80 backdrop-blur-md relative z-10">
+        <div class="max-w-7xl mx-auto px-6">
+            <p class="text-center text-xs text-slate-500 font-bold tracking-widest uppercase mb-4">Secured & Powered By</p>
+            <div class="flex flex-wrap justify-center items-center gap-8 md:gap-16 opacity-60 grayscale hover:grayscale-0 transition-all duration-500">
+                <div class="flex items-center gap-2 text-xl font-display font-bold text-white" data-aos="fade-up" data-aos-delay="50">
+                    <i class="fa-solid fa-microchip text-green-500"></i> NVIDIA NIM
+                </div>
+                <div class="flex items-center gap-2 text-xl font-display font-bold text-white" data-aos="fade-up" data-aos-delay="100">
+                    <i class="fa-solid fa-chart-line text-blue-500"></i> MetaTrader 5
+                </div>
+                <div class="flex items-center gap-2 text-xl font-display font-bold text-white" data-aos="fade-up" data-aos-delay="150">
+                    <i class="fa-brands fa-python text-yellow-400"></i> FastAPI
+                </div>
+                <div class="flex items-center gap-2 text-xl font-display font-bold text-white" data-aos="fade-up" data-aos-delay="200">
+                    <i class="fa-solid fa-shield-halved text-brand-accent"></i> 256-bit AES
+                </div>
+                <div class="flex items-center gap-2 text-xl font-display font-bold text-white" data-aos="fade-up" data-aos-delay="250">
+                    <i class="fa-solid fa-server text-purple-500"></i> LM Studio
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Stats -->
+    <section class="py-12 border-y border-white/5 bg-slate-900/50 backdrop-blur-sm relative z-10" id="architecture">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-8 divide-x divide-white/5 text-center">
+                <div data-aos="fade-up" data-aos-delay="100">
+                    <div class="text-4xl font-display font-bold text-white mb-2">120 <span class="text-brand-accent text-2xl">RPM</span></div>
+                    <div class="text-sm text-slate-400 uppercase tracking-wider">Tri-Key NVIDIA Limit</div>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="200">
+                    <div class="text-4xl font-display font-bold text-white mb-2">7</div>
+                    <div class="text-sm text-slate-400 uppercase tracking-wider">Execution Gates</div>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="300">
+                    <div class="text-4xl font-display font-bold text-white mb-2">2.08</div>
+                    <div class="text-sm text-slate-400 uppercase tracking-wider">Avg R:R Ratio</div>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="400">
+                    <div class="text-4xl font-display font-bold text-white mb-2">< 50 <span class="text-brand-accent text-2xl">ms</span></div>
+                    <div class="text-sm text-slate-400 uppercase tracking-wider">MT5 IPC Latency</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- The 3-Agent Pipeline -->
+    <section class="py-24 relative z-10" id="agents">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="text-center mb-16">
+                <h2 data-aos="fade-up" class="text-sm font-bold text-brand-accent tracking-[0.2em] uppercase mb-4">Core Intelligence</h2>
+                <h3 data-aos="fade-up" data-aos-delay="100" class="text-3xl md:text-5xl font-display font-bold mb-6">3-Agent Consensus Pipeline</h3>
+                <p data-aos="fade-up" data-aos-delay="200" class="text-slate-400 max-w-2xl mx-auto">No single point of failure. Trades are only executed when all three specialized neural models achieve a threshold consensus.</p>
+            </div>
+
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Agent 1 -->
+                <div data-aos="fade-up" data-aos-delay="100" class="glass-card p-8 rounded-2xl relative overflow-hidden group">
+                    <div class="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 rounded-full blur-2xl group-hover:bg-blue-500/20 transition-all"></div>
+                    <div class="w-14 h-14 bg-blue-500/20 rounded-xl flex items-center justify-center mb-6 border border-blue-500/30">
+                        <i class="fa-solid fa-earth-americas text-2xl text-blue-400"></i>
+                    </div>
+                    <h4 class="text-xl font-bold text-white mb-3">CLAW (Fundamental)</h4>
+                    <p class="text-slate-400 text-sm leading-relaxed mb-6">
+                        The Liquidation & Whale Hunter. Ingests Binance DOM data and liquidations to detect institutional footprint.
+                    </p>
+                    <ul class="text-sm text-slate-300 space-y-2">
+                        <li><i class="fa-solid fa-key text-blue-400 mr-2"></i> Uses <code>NVIDIA_API_KEY_3</code></li>
+                        <li><i class="fa-solid fa-check text-blue-400 mr-2"></i> Reads Global Order Flow Imbalance (OFI)</li>
+                        <li><i class="fa-solid fa-check text-blue-400 mr-2"></i> Reads VPIN (Volume-Synchronized PIN)</li>
+                    </ul>
+                </div>
+
+                <!-- Agent 2 -->
+                <div data-aos="fade-up" data-aos-delay="200" class="glass-card p-8 rounded-2xl relative overflow-hidden group">
+                    <div class="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full blur-2xl group-hover:bg-purple-500/20 transition-all"></div>
+                    <div class="w-14 h-14 bg-purple-500/20 rounded-xl flex items-center justify-center mb-6 border border-purple-500/30">
+                        <i class="fa-solid fa-chart-line text-2xl text-purple-400"></i>
+                    </div>
+                    <h4 class="text-xl font-bold text-white mb-3">Macro Trend Agent</h4>
+                    <p class="text-slate-400 text-sm leading-relaxed mb-6">
+                        Analyzes 1H and 4H market structure. Computes strict trend scoring (-100 to +100) using multi-timeframe EMA cascades to veto counter-trend setups.
+                    </p>
+                    <ul class="text-sm text-slate-300 space-y-2">
+                        <li><i class="fa-solid fa-key text-purple-400 mr-2"></i> Uses <code>NVIDIA_API_KEY_2</code></li>
+                        <li><i class="fa-solid fa-check text-purple-400 mr-2"></i> Computes HTF Trend Bias Score</li>
+                        <li><i class="fa-solid fa-check text-purple-400 mr-2"></i> Protects against false breakouts</li>
+                    </ul>
+                </div>
+
+                <!-- Agent 3 -->
+                <div data-aos="fade-up" data-aos-delay="300" class="glass-card p-8 rounded-2xl relative overflow-hidden group">
+                    <div class="absolute top-0 right-0 w-32 h-32 bg-brand-accent/10 rounded-full blur-2xl group-hover:bg-brand-accent/20 transition-all"></div>
+                    <div class="w-14 h-14 bg-brand-accent/20 rounded-xl flex items-center justify-center mb-6 border border-brand-accent/30">
+                        <i class="fa-solid fa-crosshairs text-2xl text-brand-accent"></i>
+                    </div>
+                    <h4 class="text-xl font-bold text-white mb-3">Sniper Scalper</h4>
+                    <p class="text-slate-400 text-sm leading-relaxed mb-6">
+                        Operates on 1m/5m timeframe. Cross-references live price action against Smart Money Concepts (SMC) supply/demand levels.
+                    </p>
+                    <ul class="text-sm text-slate-300 space-y-2">
+                        <li><i class="fa-solid fa-key text-brand-accent mr-2"></i> Uses <code>NVIDIA_API_KEY</code></li>
+                        <li><i class="fa-solid fa-check text-brand-accent mr-2"></i> Institutional Strike Zone mapping</li>
+                        <li><i class="fa-solid fa-check text-brand-accent mr-2"></i> Determines exact Entry Price</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deep Data Ingestion -->
+    <section class="py-24 bg-slate-900/40 border-y border-white/5 relative z-10" id="data">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="flex flex-col lg:flex-row items-center gap-16">
+                <div class="lg:w-1/2" data-aos="fade-right">
+                    <h2 class="text-sm font-bold text-brand-accent tracking-[0.2em] uppercase mb-4">Market Depth</h2>
+                    <h3 class="text-3xl md:text-4xl font-display font-bold mb-6">Institutional Data Feed</h3>
+                    <p class="text-slate-400 mb-8 leading-relaxed">
+                        Apex doesn't just read candlesticks. It reconstructs the actual orderbook to see where institutional money is flowing before the price even moves.
+                    </p>
+                    
+                    <div class="space-y-6">
+                        <div class="flex gap-4">
+                            <div class="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center flex-shrink-0 border border-blue-500/20">
+                                <i class="fa-solid fa-water text-blue-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="text-white font-bold mb-1">OFI (Order Flow Imbalance)</h4>
+                                <p class="text-slate-400 text-sm">Calculates the difference between best bid/ask size changes over time. Apex detects "Toxic Distribution" (e.g. OFI = -677) or "Aggressive Buying" to front-run retail traders.</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-4">
+                            <div class="w-12 h-12 rounded-full bg-purple-500/10 flex items-center justify-center flex-shrink-0 border border-purple-500/20">
+                                <i class="fa-solid fa-chart-pie text-purple-400"></i>
+                            </div>
+                            <div>
+                                <h4 class="text-white font-bold mb-1">VPIN (Volume-Synchronized PIN)</h4>
+                                <p class="text-slate-400 text-sm">Estimates the probability of informed trading. When VPIN spikes, the AI knows a whale or institution is accumulating quietly in the background.</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-4">
+                            <div class="w-12 h-12 rounded-full bg-brand-accent/10 flex items-center justify-center flex-shrink-0 border border-brand-accent/20">
+                                <i class="fa-solid fa-building text-brand-accent"></i>
+                            </div>
+                            <div>
+                                <h4 class="text-white font-bold mb-1">SMC Institutional Levels</h4>
+                                <p class="text-slate-400 text-sm">Maps out historical supply and demand zones based on volume profile. The AI restricts trading strictly to these specific "Strike Zones" to ensure optimal R:R.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="lg:w-1/2 w-full" data-aos="fade-left">
+                    <div class="glass-panel rounded-2xl p-6 border-blue-500/20 shadow-[0_0_30px_rgba(59,130,246,0.1)]">
+                        <div class="font-mono text-xs text-slate-300 space-y-3">
+                            <div class="text-slate-500 border-b border-white/5 pb-2">LIVE PIPELINE DATA INJECTION</div>
+                            <div><span class="text-brand-400">[DOM]</span> Injecting orderbook data into consensus pipeline</div>
+                            <div><span class="text-blue-400">[SMC]</span> Injected 4 institutional levels into AI context</div>
+                            <div><span class="text-red-400">[OFI]</span> USDCAD.x: OFI=-677 (Toxic Distribution)</div>
+                            <div><span class="text-yellow-400">[VPIN]</span> USDCAD.x: VPIN=0.380 (High) | Dominant: SELL</div>
+                            <div class="border-y border-white/10 py-2 my-2 text-white">
+                                <span class="text-slate-500">[GATING]</span> Macro volatility confirmed. Tick Velocity: 0.62x
+                            </div>
+                            <div><span class="text-brand-accent">[GATEKEEPER]</span> Rejected: Price not in Institutional Strike Zone (Nearest Supply is 0.81% away, limit 0.80%)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- The 7 Execution Gates -->
+    <section class="py-24 relative z-10" id="gates">
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="text-center mb-16">
+                <h2 data-aos="fade-up" class="text-sm font-bold text-brand-accent tracking-[0.2em] uppercase mb-4">Hardcoded Validation</h2>
+                <h3 data-aos="fade-up" data-aos-delay="100" class="text-3xl md:text-5xl font-display font-bold mb-6">The 7 Execution Gates</h3>
+                <p data-aos="fade-up" data-aos-delay="200" class="text-slate-400 max-w-2xl mx-auto">Even if all 3 AI agents hallucinate a BUY signal, the backend python engine physically blocks the trade unless it passes 7 rigorous mathematical checks.</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div data-aos="fade-up" data-aos-delay="100" class="glass-card p-6 rounded-xl border-l-4 border-l-brand-accent">
+                    <h4 class="text-lg font-bold text-white mb-2">Gate 1: Minimum Consensus</h4>
+                    <p class="text-slate-400 text-sm">Combined AI score must be > 72%. If agents disagree (e.g., Macro holds, Scalper buys), the trade is instantly vetoed.</p>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="200" class="glass-card p-6 rounded-xl border-l-4 border-l-brand-accent">
+                    <h4 class="text-lg font-bold text-white mb-2">Gate 2: Killzone Timing</h4>
+                    <p class="text-slate-400 text-sm">Trades are blocked outside of optimal London/NY overlap "Killzones". Low liquidity hours (Asian session) are heavily restricted.</p>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="300" class="glass-card p-6 rounded-xl border-l-4 border-l-brand-accent">
+                    <h4 class="text-lg font-bold text-white mb-2">Gate 3: HTF Trend Alignment</h4>
+                    <p class="text-slate-400 text-sm">A SHORT trade is blocked if the 1H/4H EMA cascade is BULLISH. You cannot trade against the macro trend.</p>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="400" class="glass-card p-6 rounded-xl border-l-4 border-l-brand-accent">
+                    <h4 class="text-lg font-bold text-white mb-2">Gate 4: SMC Strike Zone</h4>
+                    <p class="text-slate-400 text-sm">Price must be within 0.80% of a known institutional supply or demand level. No entering trades in the "middle of nowhere".</p>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="500" class="glass-card p-6 rounded-xl border-l-4 border-l-brand-accent">
+                    <h4 class="text-lg font-bold text-white mb-2">Gate 5: Early Entry Mode</h4>
+                    <p class="text-slate-400 text-sm">Requires a first/second M15 resume candle after a retest. Blocks late entries when momentum is already over-extended.</p>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="600" class="glass-card p-6 rounded-xl border-l-4 border-l-brand-accent">
+                    <h4 class="text-lg font-bold text-white mb-2">Gate 6: Stack & Anti-Chase</h4>
+                    <p class="text-slate-400 text-sm">Enforces max 1 position per symbol, applies a strict 45-minute cooldown after a closed trade, and prevents FOMO reentry.</p>
+                </div>
+                <div data-aos="fade-up" data-aos-delay="700" class="glass-card p-6 rounded-xl border-l-4 border-l-brand-accent md:col-span-2 lg:col-span-3 lg:w-1/3 lg:mx-auto">
+                    <h4 class="text-lg font-bold text-white mb-2 text-center">Gate 7: Strict R:R Validation</h4>
+                    <p class="text-slate-400 text-sm text-center">The final hard gate. Every trade must have a Reward/Risk ratio >= 1.5. If the AI proposes an SL that ruins the ratio, the trade dies here.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Risk Management & R:R -->
+    <section class="py-24 relative z-10" id="risk">
+        <!-- Decoration -->
+        <div class="absolute bottom-0 right-0 w-[600px] h-[600px] bg-blue-500/5 rounded-full blur-3xl -z-10"></div>
+
+        <div class="max-w-7xl mx-auto px-6">
+            <div class="flex flex-col lg:flex-row-reverse items-center gap-16">
+                <div class="lg:w-1/2" data-aos="fade-left">
+                    <h2 class="text-sm font-bold text-brand-accent tracking-[0.2em] uppercase mb-4">Math over Emotion</h2>
+                    <h3 class="text-3xl md:text-4xl font-display font-bold mb-6">R:R and Position Sizing</h3>
+                    <p class="text-slate-400 mb-8 leading-relaxed">
+                        Apex does not rely on win-rate alone. By mathematically enforcing strict Risk-to-Reward (R:R) ratios, the bot remains highly profitable even with a 33% win-rate.
+                    </p>
+                    
+                    <div class="space-y-6">
+                        <div class="glass-panel p-5 rounded-xl border-white/5 border-l-2 border-l-green-500">
+                            <div class="flex justify-between items-center mb-2">
+                                <h4 class="text-white font-bold">Hardcoded Forex Risk</h4>
+                                <span class="bg-green-500/20 text-green-400 text-xs px-2 py-1 rounded">2.08:1 R:R</span>
+                            </div>
+                            <p class="text-slate-400 text-sm">Stop Loss is strictly clamped to <strong>0.12%</strong> and Take Profit to <strong>0.25%</strong>. AI parameter hallucinations are completely ignored.</p>
+                        </div>
+
+                        <div class="glass-panel p-5 rounded-xl border-white/5 border-l-2 border-l-yellow-500">
+                            <div class="flex justify-between items-center mb-2">
+                                <h4 class="text-white font-bold">Gold & Index Scaling</h4>
+                                <span class="bg-yellow-500/20 text-yellow-400 text-xs px-2 py-1 rounded">Auto-Scaler</span>
+                            </div>
+                            <p class="text-slate-400 text-sm">Highly volatile pairs like XAUUSD automatically scale the base SL/TP by 2.5x (SL: 0.30%, TP: 0.625%) to prevent false stop-outs while maintaining the exact same R:R.</p>
+                        </div>
+
+                        <div class="glass-panel p-5 rounded-xl border-white/5 border-l-2 border-l-blue-500">
+                            <div class="flex justify-between items-center mb-2">
+                                <h4 class="text-white font-bold">Kelly Criterion Sizing</h4>
+                                <span class="bg-blue-500/20 text-blue-400 text-xs px-2 py-1 rounded">Geometric Growth</span>
+                            </div>
+                            <p class="text-slate-400 text-sm">Lot sizes aren't guessed. The bot reads live MT5 equity and calculates exact lot sizes to risk exactly 2% of the account (e.g., $20 on a $1k account) per trade based on the pip distance to the SL.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="lg:w-1/2 w-full" data-aos="fade-right">
+                    <div class="glass-card rounded-2xl p-8 relative overflow-hidden text-center">
+                        <i class="fa-solid fa-shield-halved text-6xl text-brand-accent/20 absolute top-10 right-10"></i>
+                        <h4 class="text-2xl font-bold text-white mb-8">AI-TRAP Defensive Protocol</h4>
+                        
+                        <div class="space-y-4 text-left">
+                            <div class="bg-[#0f172a] rounded-lg p-4 border border-white/5">
+                                <div class="text-sm font-bold text-white mb-1"><i class="fa-solid fa-crosshairs text-brand-accent mr-2"></i> Step-Trailing Stops</div>
+                                <div class="text-xs text-slate-400">Once a trade reaches 50% of the TP target, the MT5 Bridge automatically modifies the order to move the Stop Loss to Break-Even.</div>
+                            </div>
+                            <div class="bg-[#0f172a] rounded-lg p-4 border border-white/5">
+                                <div class="text-sm font-bold text-white mb-1"><i class="fa-solid fa-bolt text-brand-accent mr-2"></i> Volatility Snapping</div>
+                                <div class="text-xs text-slate-400">If DOM or OFI detects sudden institutional dumping against an open position, AI-TRAP snaps the SL tight to secure partial profits immediately.</div>
+                            </div>
+                            <div class="bg-[#0f172a] rounded-lg p-4 border border-white/5">
+                                <div class="text-sm font-bold text-white mb-1"><i class="fa-solid fa-lock text-brand-accent mr-2"></i> Daily Circuit Breaker</div>
+                                <div class="text-xs text-slate-400">If the daily PnL drops by X%, the Python backend drops the connection to MT5 and refuses to execute any more trades until midnight.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-white/5 bg-[#010308] py-12 relative z-10">
+        <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-6">
+            <div class="flex items-center gap-3">
+                <i class="fa-solid fa-bolt text-brand-accent"></i>
+                <span class="font-display font-bold text-xl tracking-wider text-white">APEX<span class="text-brand-accent">v2.6</span></span>
+            </div>
+            <p class="text-slate-500 text-sm text-center">Designed & Engineered for High-Frequency Institutional Execution.</p>
+            <div class="flex gap-4">
+                <a href="#" class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center hover:bg-brand-accent transition-colors">
+                    <i class="fa-brands fa-github text-white"></i>
+                </a>
+                <a href="#" class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center hover:bg-brand-accent transition-colors">
+                    <i class="fa-brands fa-discord text-white"></i>
+                </a>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Initialize Animations -->
+    <script>
+        AOS.init({
+            once: true,
+            offset: 50,
+            duration: 800,
+            easing: 'ease-out-cubic',
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+"""
+APEX Performance Tracker — Kelly Criterion + Daily Scoreboard
+Implements mathematically optimal position sizing and live session metrics.
+"""
+import os
+import json
+from datetime import datetime, date
+
+# ============================================================
+# KELLY CRITERION POSITION SIZING
+# ============================================================
+
+def kelly_position_size(confidence_pct: float, rr_ratio: float, max_risk_pct: float = 0.02, kelly_fraction: float = 0.25) -> float:
+    """
+    Fractional Kelly Criterion for optimal position sizing.
+    
+    Args:
+        confidence_pct: AI consensus confidence (0-100)
+        rr_ratio: Risk/Reward ratio (e.g., 2.0 means TP is 2x SL)
+        max_risk_pct: Hard ceiling on risk per trade (default 2%)
+        kelly_fraction: Kelly multiplier (0.25 = quarter-Kelly for safety)
+    
+    Returns:
+        Optimal risk percentage of equity (e.g., 0.005 = 0.5%)
+    """
+    # Map confidence to win probability
+    p = max(0.01, min(0.95, confidence_pct / 100))
+    b = max(0.1, rr_ratio)  # Net odds from R:R ratio
+    q = 1 - p
+    
+    # Full Kelly: f* = (p * b - q) / b
+    full_kelly = (p * b - q) / b
+    
+    if full_kelly <= 0:
+        # Negative edge — minimum micro-size only
+        return 0.001
+    
+    # Fractional Kelly to reduce variance (quarter-Kelly default)
+    fractional = full_kelly * kelly_fraction
+    
+    # Hard cap at max_risk_pct
+    risk_pct = min(fractional, max_risk_pct)
+    
+    # Floor at 0.1% minimum
+    return max(0.001, round(risk_pct, 5))
+
+
+# ============================================================
+# DAILY PERFORMANCE SCOREBOARD
+# ============================================================
+
+# In-memory session trade results
+_session_trades = []
+
+
+def record_closed_trade(symbol: str, direction: str, entry: float, exit_price: float,
+                         pnl: float, confidence: float, exit_reason: str,
+                         sl_pct: float = 0, tp_pct: float = 0):
+    """Record a completed trade for session performance tracking."""
+    _session_trades.append({
+        "timestamp": datetime.now().isoformat(),
+        "symbol": symbol,
+        "direction": direction,
+        "entry": entry,
+        "exit": exit_price,
+        "pnl": round(pnl, 2),
+        "confidence": confidence,
+        "exit_reason": exit_reason,
+        "sl_pct": sl_pct,
+        "tp_pct": tp_pct,
+    })
+
+
+def get_session_stats() -> dict:
+    """Compute live session performance metrics."""
+    if not _session_trades:
+        return {
+            "session_trades": 0, "win_rate": 0.0, "net_pnl": 0.0,
+            "profit_factor": 0.0, "avg_winner": 0.0, "avg_loser": 0.0,
+            "best_trade": 0.0, "worst_trade": 0.0, "streak": 0,
+        }
+    
+    wins = [t for t in _session_trades if t["pnl"] > 0]
+    losses = [t for t in _session_trades if t["pnl"] < 0]
+    
+    total = len(_session_trades)
+    win_rate = len(wins) / total * 100 if total else 0
+    
+    gross_profit = sum(t["pnl"] for t in wins)
+    gross_loss = abs(sum(t["pnl"] for t in losses))
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 99.99
+    
+    avg_winner = round(gross_profit / len(wins), 2) if wins else 0
+    avg_loser = round(-gross_loss / len(losses), 2) if losses else 0
+    
+    best = max(t["pnl"] for t in _session_trades)
+    worst = min(t["pnl"] for t in _session_trades)
+    
+    # Current streak
+    streak = 0
+    for t in reversed(_session_trades):
+        if t["pnl"] > 0:
+            if streak >= 0:
+                streak += 1
+            else:
+                break
+        elif t["pnl"] < 0:
+            if streak <= 0:
+                streak -= 1
+            else:
+                break
+    
+    return {
+        "session_trades": total,
+        "win_rate": round(win_rate, 1),
+        "net_pnl": round(sum(t["pnl"] for t in _session_trades), 2),
+        "profit_factor": profit_factor,
+        "avg_winner": avg_winner,
+        "avg_loser": avg_loser,
+        "best_trade": round(best, 2),
+        "worst_trade": round(worst, 2),
+        "streak": streak,  # Positive = win streak, negative = loss streak
+    }
+
+
+def get_kelly_recommendation(session_stats: dict, base_confidence: float, rr_ratio: float) -> dict:
+    """
+    Get Kelly-adjusted position sizing that adapts to session performance.
+    If session is going poorly, automatically reduce aggression.
+    """
+    fraction = 0.25  # Default quarter-Kelly
+    
+    win_rate = session_stats.get("win_rate", 0)
+    session_trades = session_stats.get("session_trades", 0)
+    streak = session_stats.get("streak", 0)
+    
+    # Adaptive Kelly fraction based on live session performance
+    if session_trades >= 3:
+        if win_rate >= 70:
+            fraction = 0.35  # Slightly more aggressive on hot streak
+        elif win_rate < 40:
+            fraction = 0.15  # Reduce size on cold streak
+        elif streak <= -3:
+            fraction = 0.10  # Emergency reduction on loss streak
+    
+    risk_pct = kelly_position_size(base_confidence, rr_ratio, kelly_fraction=fraction)
+    
+    return {
+        "risk_pct": risk_pct,
+        "kelly_fraction": fraction,
+        "reason": (
+            f"Kelly {fraction:.0%} | WR:{win_rate:.0f}% ({session_trades} trades) | Streak:{streak:+d}"
+            if session_trades >= 3 else
+            f"Kelly {fraction:.0%} | New session ({session_trades} trades)"
+        )
+    }

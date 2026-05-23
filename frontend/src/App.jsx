@@ -21,7 +21,8 @@ import {
   Terminal,
   Cpu,
   Search,
-  MessageSquare
+  MessageSquare,
+  Clock
 } from 'lucide-react';
 import TradingCommandCenter from './components/TradingCommandCenter';
 import ApiFleetManager from './components/ApiFleetManager';
@@ -33,6 +34,7 @@ import LiveTerminal from './components/LiveTerminal';
 import FluidBackground from './components/FluidBackground';
 import BotPerformance from './components/BotPerformance';
 import ChatBox from './components/ChatBox';
+import MarketSchedule from './components/MarketSchedule';
 import { API_BASE, WS_URL } from './lib/api';
 
 // =============================================================================
@@ -352,11 +354,17 @@ const App = () => {
   }, [connectWebSocket]);
 
   // NIM Stats
-  const nimStats = marketData.nvidia_api_stats || { rpm: 0, rpm_limit: 40, calls_total: 0 };
-  const nimPct = Math.min(100, (nimStats.rpm / nimStats.rpm_limit) * 100);
+  const rawNimStats = marketData.nvidia_api_stats || {};
+  const nimAgents = [
+    { id: 'fundamental', label: 'Fundamental AI' },
+    { id: 'scalper', label: 'Scalper AI' },
+    { id: 'trend', label: 'Trend AI' },
+    { id: 'chat', label: 'Chat AI' }
+  ];
 
   const navItems = [
     { id: 'dashboard', label: 'Command Center', icon: LayoutDashboard },
+    { id: 'schedules', label: 'Time Schedules', icon: Clock },
     { id: 'performance', label: 'Bot Performance', icon: TrendingUp },
     { id: 'backtest', label: 'Backtest Engine', icon: BarChart3 },
     { id: 'optimize', label: 'Hyper-Optimizer', icon: Zap },
@@ -370,6 +378,8 @@ const App = () => {
     switch (tabId) {
       case 'dashboard':
         return <TradingCommandCenter marketData={marketData} tradingEnabled={tradingEnabled} />;
+      case 'schedules':
+        return <MarketSchedule />;
       case 'performance':
         return <BotPerformance onNavigate={setActiveTab} />;
       case 'backtest':
@@ -397,7 +407,7 @@ const App = () => {
   const estimatedOpenFees = (marketData.positions?.length || 0) * MT5_SPREAD_FEE_ESTIMATE;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white flex overflow-hidden">
+    <div className="h-screen bg-slate-950 text-white flex overflow-hidden">
       <FluidBackground />
       {/* ====== SIDEBAR (desktop: left panel, mobile: bottom nav) ====== */}
       <div className="hidden lg:flex w-64 bg-black/40 backdrop-blur-xl border-r border-white/5 flex-col shrink-0">
@@ -414,8 +424,8 @@ const App = () => {
           </div>
         </div>
         
-        {/* Nav */}
-        <nav className="flex-1 py-4 px-2 overflow-y-auto">
+        {/* Nav - scrollable area */}
+        <nav className="flex-1 py-4 px-2 overflow-y-auto min-h-0">
           <p className="text-[10px] text-slate-600 uppercase tracking-widest px-3 mb-2 font-medium">Navigation</p>
           <ul className="space-y-0.5">
             {navItems.map((item) => {
@@ -447,53 +457,54 @@ const App = () => {
 
 
 
-        {/* NIM API Gauge */}
-        <div className="px-3 pb-2">
-          <div className="bg-black/40 rounded-2xl p-3 border border-white/5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center space-x-2">
-                <Cpu className="w-3.5 h-3.5 text-pink-400" />
-                <span className="text-[10px] text-slate-500 uppercase tracking-wider font-medium">NIM API</span>
-              </div>
-              <span className={`text-xs font-bold font-mono ${nimStats.rpm > 30 ? 'text-rose-400' : nimStats.rpm > 15 ? 'text-amber-400' : 'text-pink-400'}`}>
-                {nimStats.rpm}/{nimStats.rpm_limit}
+        {/* ── PINNED BOTTOM: NIM Gauges + Connection ── */}
+        <div className="shrink-0 border-t border-white/5">
+          {/* NIM API Gauges (Per Key) */}
+          <div className="px-3 pt-2 pb-1 space-y-1.5">
+            {nimAgents.map(agent => {
+              const stats = rawNimStats[agent.id];
+              if (!stats) return null;
+              const pct = Math.min(100, (stats.rpm / stats.rpm_limit) * 100);
+              return (
+                <div key={agent.id} className="flex items-center gap-2">
+                  <Cpu className="w-2.5 h-2.5 text-pink-400 shrink-0" />
+                  <span className="text-[8px] text-slate-500 uppercase tracking-wider font-bold w-20 truncate">{agent.label}</span>
+                  <div className="flex-1 h-1 bg-white/5 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-700 ${
+                        stats.rpm > 30 ? 'bg-rose-400' : stats.rpm > 15 ? 'bg-amber-400' : 'bg-gradient-to-r from-pink-500 to-pink-400'
+                      }`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <span className={`text-[9px] font-bold font-mono w-8 text-right ${stats.rpm > 30 ? 'text-rose-400' : stats.rpm > 15 ? 'text-amber-400' : 'text-pink-400'}`}>
+                    {stats.rpm}/{stats.rpm_limit}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        
+          {/* Connection Status */}
+          <div className="px-3 pb-3 pt-1">
+            <div className="flex items-center space-x-2 px-3 py-2 rounded-xl bg-black/40">
+              {wsConnected ? (
+                <>
+                  <div className="w-1.5 h-1.5 bg-pink-400 rounded-full animate-pulse shadow-lg shadow-pink-400/50" />
+                  <span className="text-[11px] text-pink-400 font-medium">Live</span>
+                </>
+              ) : (
+                <>
+                  <div className="w-1.5 h-1.5 bg-rose-400 rounded-full" />
+                  <span className="text-[11px] text-rose-400 font-medium">Offline</span>
+                </>
+              )}
+              <span className="text-[9px] text-slate-600 ml-auto">
+                {lastUpdate ? lastUpdate.toLocaleTimeString() : '—'}
               </span>
             </div>
-            {/* RPM Bar */}
-            <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full transition-all duration-700 ${
-                  nimStats.rpm > 30 ? 'bg-rose-400' : nimStats.rpm > 15 ? 'bg-amber-400' : 'bg-gradient-to-r from-pink-500 to-pink-400'
-                }`}
-                style={{ width: `${nimPct}%` }}
-              />
-            </div>
-            <div className="flex justify-between mt-1.5">
-              <span className="text-[9px] text-slate-600">{nimStats.calls_total} total calls</span>
-              <span className="text-[9px] text-slate-600">RPM</span>
-            </div>
           </div>
-        </div>
-        
-        {/* Connection Status */}
-        <div className="px-3 pb-3">
-          <div className="flex items-center space-x-2 px-3 py-2 rounded-xl bg-black/40">
-            {wsConnected ? (
-              <>
-                <div className="w-1.5 h-1.5 bg-pink-400 rounded-full animate-pulse shadow-lg shadow-pink-400/50" />
-                <span className="text-[11px] text-pink-400 font-medium">Live</span>
-              </>
-            ) : (
-              <>
-                <div className="w-1.5 h-1.5 bg-rose-400 rounded-full" />
-                <span className="text-[11px] text-rose-400 font-medium">Offline</span>
-              </>
-            )}
-            <span className="text-[9px] text-slate-600 ml-auto">
-              {lastUpdate ? lastUpdate.toLocaleTimeString() : '—'}
-            </span>
-          </div>
-        </div>
+        </div>  {/* end pinned bottom */}
       </div>
 
       {/* ====== MAIN AREA ====== */}

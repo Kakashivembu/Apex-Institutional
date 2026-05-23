@@ -6,6 +6,8 @@ Institutional-grade capital protection against localized catastrophic days.
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 import asyncio
+import json
+import os
 
 # =============================================================================
 # CIRCUIT BREAKER CONFIGURATION
@@ -24,10 +26,52 @@ _circuit_state = {
     "trip_reason": "",         # Reason for trip
 }
 
+CIRCUIT_STATE_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "circuit_state.json")
+
+def load_circuit_state():
+    global _circuit_state
+    if os.path.exists(CIRCUIT_STATE_FILE):
+        try:
+            with open(CIRCUIT_STATE_FILE, "r") as f:
+                data = json.load(f)
+                
+            if data.get("last_reset_date") == get_current_date():
+                trip_time_str = data.get("trip_time")
+                trip_time = None
+                if trip_time_str:
+                    try:
+                        trip_time = datetime.fromisoformat(trip_time_str)
+                    except:
+                        pass
+                
+                _circuit_state["active"] = data.get("active", False)
+                _circuit_state["daily_start_balance"] = data.get("daily_start_balance", 0.0)
+                _circuit_state["high_water_mark"] = data.get("high_water_mark", 0.0)
+                _circuit_state["current_drawdown_pct"] = data.get("current_drawdown_pct", 0.0)
+                _circuit_state["last_reset_date"] = data.get("last_reset_date")
+                _circuit_state["trip_time"] = trip_time
+                _circuit_state["trip_reason"] = data.get("trip_reason", "")
+                print(f"[RISK-MANAGER] Loaded persistent circuit state for {get_current_date()}")
+        except Exception as e:
+            print(f"[RISK-MANAGER] Error loading circuit state: {e}")
+
+def save_circuit_state():
+    try:
+        data = _circuit_state.copy()
+        if data["trip_time"]:
+            data["trip_time"] = data["trip_time"].isoformat()
+        with open(CIRCUIT_STATE_FILE, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"[RISK-MANAGER] Error saving circuit state: {e}")
+
 
 def get_current_date() -> str:
     """Get current date in YYYY-MM-DD format."""
     return datetime.now().strftime("%Y-%m-%d")
+
+# Load state on module import
+load_circuit_state()
 
 
 def should_reset_for_new_day() -> bool:
@@ -50,6 +94,8 @@ def reset_circuit_breaker(balance: float) -> None:
     _circuit_state["last_reset_date"] = current_date
     _circuit_state["trip_time"] = None
     _circuit_state["trip_reason"] = ""
+    
+    save_circuit_state()
     
     print(f"[RISK-MANAGER] Circuit breaker reset for {current_date}. Start balance: ${balance:,.2f}")
 
@@ -130,6 +176,12 @@ def check_circuit_breaker(current_balance: float, current_equity: float = 0.0) -
             print(f"[CIRCUIT BREAKER] Floating drawdown: {floating_dd_pct:.2f}% (emergency limit: {floating_limit}%)")
             print(f"[CIRCUIT BREAKER] MARGIN CALL PROTECTION — ALL ENTRIES BLOCKED")
             print(f"{'='*70}\n")
+            
+        if _circuit_state["active"]:
+            save_circuit_state()
+    else:
+        # Save state periodically to update high water mark
+        save_circuit_state()
 
     return {
         "active": _circuit_state["active"],
@@ -179,6 +231,7 @@ def force_reset() -> None:
     """Manual reset of circuit breaker (for admin use only)."""
     _circuit_state["active"] = False
     _circuit_state["trip_reason"] = "Manual reset by admin"
+    save_circuit_state()
     print(f"[RISK-MANAGER] Circuit breaker manually reset")
 
 

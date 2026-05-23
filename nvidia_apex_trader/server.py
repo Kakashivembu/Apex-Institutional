@@ -15,7 +15,7 @@ env_path = os.path.join(os.path.dirname(__file__), '.env')
 load_dotenv(env_path)
 
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+NVIDIA_API_KEY_3 = os.getenv("NVIDIA_API_KEY_3", "")
 
 app = FastAPI(title="Apex Institutional API")
 
@@ -52,12 +52,14 @@ import key_manager
 from core import env_manager
 from core import exchange
 from core.brain import evaluate_market, run_trade_autopsy, clamp_risk_to_symbol
+from core.performance_tracker import kelly_position_size, get_kelly_recommendation, get_session_stats, record_closed_trade
+from core.memory import record_trade_outcome, get_recent_failure_summary
 from core.backtest_agent import generate_ai_backtest
 from core.backtester import run_historical_backtest
 from core.optimizer import run_grid_search
 from core.flight_recorder import save_flight_state, load_flight_state
 from core.data import fetch_dom_imbalance, fetch_multi_timeframe, fetch_candles_sync
-from core.macro_sensors import detect_fair_value_gaps, detect_order_blocks
+from core.macro_sensors import detect_fair_value_gaps, detect_order_blocks, calculate_order_flow_imbalance, calculate_vpin
 from core.news_shield import check_news_killswitch
 from core.risk_manager import check_circuit_breaker, get_circuit_status, reset_circuit_breaker, force_reset, midnight_reset_loop
 from core.mt5_engine import (
@@ -72,37 +74,14 @@ from core.mt5_engine import (
 # Broker-specific symbol maps â€” auto-selected based on connected MT5 server
 BROKER_SYMBOL_MAPS = {
     "xmglobal": [
-        # â”€â”€ Precious Metals â”€â”€
-        "GOLD.i#", "SILVER.i#", "XAUEUR.i#", "XAUJPY.i#", "GAUUSD.i#",
-        # â”€â”€ Indices â”€â”€
-        "US30Cash#", "US100Cash#", "US500Cash#", "JP225Cash#", "GER40Cash#",
-        # â”€â”€ Energy â”€â”€
-        "OILCash#", "BRENTCash#",
-        # â”€â”€ Crypto â”€â”€
-        "BTCUSD#", "ETHUSD#", "BTCJPY#", "XRPUSD#", "ENJUSD#",
-        # â”€â”€ Forex Majors â”€â”€
+        "GOLD.i#",
         "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#",
-        # â”€â”€ Forex Crosses â”€â”€
-        "EURGBP#", "GBPJPY#", "EURJPY#", "AUDCAD#", "AUDJPY#", "EURAUD#",
-        "GBPCAD#", "EURNZD#", "EURCHF#", "AUDNZD#", "GBPAUD#", "CHFJPY#",
-        "EURCAD#", "CADJPY#", "NZDCAD#", "NZDJPY#",
+        "GBPJPY#", "EURGBP#", "AUDJPY#", "NZDJPY#"
     ],
     "goatfunded": [
-        # â”€â”€ Precious Metals â”€â”€
-        "XAUUSD.x", "XAGUSD.x",
-        # â”€â”€ Indices â”€â”€
-        "US30.x", "NAS100.x", "SPX500.x", "JAP225.x", "GER40.x", "AUS200.x", "UK100.x",
-        # â”€â”€ Energy â”€â”€
-        "WTI.x", "BRENT.x",
-        # â”€â”€ Crypto â”€â”€
-        "BTCUSD.x", "ETHUSD.x", "SOLUSD.x", "LTCUSD.x", "BNBUSD.x", "BCHUSD.x",
-        # â”€â”€ Forex Majors â”€â”€
+        "XAUUSD.x",
         "EURUSD.x", "GBPUSD.x", "USDJPY.x", "AUDUSD.x", "USDCAD.x", "USDCHF.x", "NZDUSD.x",
-        # â”€â”€ Forex Crosses â”€â”€
-        "EURGBP.x", "GBPJPY.x", "EURJPY.x", "AUDCAD.x", "AUDJPY.x", "EURAUD.x",
-        "GBPCAD.x", "EURNZD.x", "EURCHF.x", "AUDNZD.x", "GBPAUD.x", "CHFJPY.x",
-        "EURCAD.x", "CADJPY.x", "NZDCAD.x", "NZDJPY.x",
-        "CADCHF.x", "AUDCHF.x", "GBPCHF.x", "GBPNZD.x", "NZDCHF.x",
+        "GBPJPY.x", "EURGBP.x", "AUDJPY.x", "NZDJPY.x"
     ],
 }
 
@@ -155,22 +134,71 @@ def _is_crypto_symbol(symbol: str) -> bool:
 
 def _is_forex_symbol(symbol: str) -> bool:
     clean = "".join(ch for ch in str(symbol or "").upper() if ch.isalpha())
+    if "GOLD" in clean or "XAU" in clean:
+        return True
     if len(clean) < 6:
         return False
     return clean[:3] in FX_CURRENCIES and clean[3:6] in FX_CURRENCIES
 
+# Forex Session Configuration (UTC based)
+SESSION_CONFIGS = [
+    { "id": "sydney", "label": "Sydney Session", "open": 22, "close": 7, "pairs": ["AUDUSD", "NZDUSD", "AUDJPY", "NZDJPY"] },
+    { "id": "asian", "label": "Asian/Tokyo Session", "open": 23, "close": 8, "pairs": ["USDJPY", "AUDUSD", "NZDUSD", "AUDJPY", "NZDJPY"] },
+    { "id": "london", "label": "London Session", "open": 7, "close": 16, "pairs": ["EURUSD", "GBPUSD", "USDCHF", "EURGBP"] },
+    { "id": "newyork", "label": "New York Session", "open": 12, "close": 21, "pairs": ["EURUSD", "USDJPY", "GBPUSD", "USDCAD", "GBPJPY"] }
+]
+
+def get_current_session_pairs() -> set:
+    now = datetime.utcnow()
+    utc_decimal = now.hour + now.minute / 60.0
+    active_pairs = set()
+    
+    for s in SESSION_CONFIGS:
+        is_active = False
+        if s["open"] < s["close"]:
+            if s["open"] <= utc_decimal < s["close"]:
+                is_active = True
+        else:
+            if utc_decimal >= s["open"] or utc_decimal < s["close"]:
+                is_active = True
+                
+        if is_active:
+            active_pairs.update(s["pairs"])
+            
+    return active_pairs
+
 def get_active_scan_symbols() -> list:
-    """Return the current broker symbols filtered by the saved trading mode."""
+    """Return the current broker symbols filtered by the saved trading mode and active sessions."""
     params = _load_params_from_disk()
     mode = str(params.get("mode", "forex")).lower()
+    
     if mode == "forex":
-        # Forex mode must be pure FX. Mixed metals/indices/energy scans were
-        # still allowing trades like BRENT while the dashboard said forex.
-        return [symbol for symbol in TARGET_SYMBOLS if _is_forex_symbol(symbol)]
+        now = datetime.utcnow()
+        utc_decimal = now.hour + now.minute / 60.0
+        active_session_bases = get_current_session_pairs()
+        filtered = []
+        for symbol in TARGET_SYMBOLS:
+            if not _is_forex_symbol(symbol):
+                continue
+            
+            # Gold is strictly limited to London and NY Overlap (08:00 to 16:00 UTC)
+            if "GOLD" in symbol.upper() or "XAU" in symbol.upper():
+                if 8 <= utc_decimal < 16:
+                    filtered.append(symbol)
+                continue
+            
+            # Check if symbol matches an active pair (ignoring suffixes)
+            clean = "".join(ch for ch in str(symbol).upper() if ch.isalpha())
+            if clean[:6] in active_session_bases:
+                filtered.append(symbol)
+        
+        # If no pairs are active, return an empty list
+        return filtered
+        
     return list(TARGET_SYMBOLS)
 
-FLEET_SCAN_DELAY = 5
-FLEET_INTER_SYMBOL_DELAY = 1.5  # Throttle between symbol scans to prevent API/VRAM overload
+FLEET_SCAN_DELAY = 10
+FLEET_INTER_SYMBOL_DELAY = 5.5  # Throttle to 5.5s per symbol (3 calls) to stay under NVIDIA 40 RPM limit
 MAX_OPEN_POSITIONS = 8
 MAX_POSITIONS_PER_SYMBOL = 2  # Hard cap: max open positions allowed per individual symbol
 
@@ -277,6 +305,61 @@ def calculate_dynamic_lot_size(symbol, current_price, stop_loss_price, account_e
         
     return max(min_lot, min(adjusted_lot_size, max_lot))
 
+def _execute_secure_bag_partial(position_ticket: int, symbol: str, current_lots: float, order_type: int) -> bool:
+    """
+    Executes an atomic 50% partial close on an open position to secure profits.
+    """
+    import MetaTrader5 as mt5
+
+    # Calculate exact 50% split rounded to standard broker steps
+    partial_lots = round(current_lots * 0.5, 2)
+    if partial_lots < 0.01:
+        return False  # Position too small to split
+
+    # Invert action for the closing deal (Buy to close Short, Sell to close Long)
+    action_type = mt5.ORDER_TYPE_SELL if order_type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+    tick = mt5.symbol_info_tick(symbol)
+    if not tick:
+        return False
+
+    price = tick.bid if action_type == mt5.ORDER_TYPE_SELL else tick.ask
+
+    # Resolve broker filling mode
+    symbol_info = mt5.symbol_info(symbol)
+    if not symbol_info:
+        return False
+
+    # Detect broker filling mode: SYMBOL_FILLING_IOC = 2 (not exposed as mt5 constant)
+    SYMBOL_FILLING_IOC = 2
+    if symbol_info.filling_mode & SYMBOL_FILLING_IOC:
+        filling_mode = mt5.ORDER_FILLING_IOC
+    else:
+        filling_mode = mt5.ORDER_FILLING_FOK
+
+    request = {
+        "action": mt5.TRADE_ACTION_DEAL,
+        "symbol": symbol,
+        "volume": partial_lots,
+        "type": action_type,
+        "position": position_ticket,
+        "price": price,
+        "deviation": 10,
+        "magic": 202605,
+        "comment": "Secure Bag: 50% Extraction",
+        "type_time": mt5.ORDER_TIME_GTC,
+        "type_filling": filling_mode
+    }
+
+    result = mt5.order_send(request)
+    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+        print(f"[SECURE-BAG] Atomic extraction successful. Extracted {partial_lots} lots from ticket #{position_ticket}")
+        return True
+    else:
+        err = result.retcode if result else "Timeout"
+        print(f"[SECURE-BAG] Atomic extraction failed. Retcode: {err}")
+        return False
+
+
 # ============================================================
 # NVIDIA NIM API RATE TRACKING
 # ============================================================
@@ -367,20 +450,19 @@ def build_step_trail_snapshot():
         }
     return snapshot
 
-# Tier thresholds (percentage from entry) â€” MICRO-PIPETTE FOREX SCALPING CONFIG
-# 3-Tier MT5 Step-Trailer: instant breakeven â†’ tight trail â†’ ultra-tight runner
-# Calibrated for Forex majors (~4-20 pip ranges) â€” true scalping geometry
+# Tier thresholds (percentage from entry) — 3-Tier MT5 Step-Trailer: instant breakeven → tight trail → ultra-tight runner
+# Calibrated for Forex majors (~8-20 pip ranges) — respects spread + ATR noise
 FOREX_TRAIL_CONFIG = {
-    "initial_sl_pct": 0.04,
-    "tier1_trigger_pct": 0.025,
-    "tier1_sl_pct": 0.005,
-    "tier2_trigger_pct": 0.05,
-    "tier2_trail_pct": 0.02,
-    "tier2_sl_pct": 0.025,
-    "tier3_trigger_pct": 0.075,
-    "tier3_trail_pct": 0.015,
-    "tier3_sl_pct": 0.05,
-    "tier2_min_step_pct": 0.005,
+    "initial_sl_pct": 0.06,          # ~8 pips on majors (was 0.04 = 5.5 pips — too tight)
+    "tier1_trigger_pct": 0.04,       # Breakeven lock after ~5.5 pips profit (was 0.025)
+    "tier1_sl_pct": 0.008,           # Lock ~1 pip profit at breakeven
+    "tier2_trigger_pct": 0.07,       # Trail starts at ~10 pips profit (was 0.05)
+    "tier2_trail_pct": 0.025,        # Trail distance: ~3.5 pips behind peak
+    "tier2_sl_pct": 0.035,           # Lock ~5 pips profit
+    "tier3_trigger_pct": 0.10,       # Runner trail at ~14 pips profit (was 0.075)
+    "tier3_trail_pct": 0.018,        # Tight runner: ~2.5 pips behind peak
+    "tier3_sl_pct": 0.06,            # Lock ~8 pips profit
+    "tier2_min_step_pct": 0.005,     # Fine ratcheting steps
 }
 
 # Gold-specific step-trailing â€” widened to respect Gold ATR & spread noise
@@ -692,7 +774,29 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         smc_section = f"=== INSTITUTIONAL SMC LEVELS ===\nSMC detection error: {smc_err}"
         print(f"[SMC] Detection error (non-blocking): {smc_err}")
 
-    market_data_text = f"Current equity: ${last_equity['total']}, Positions: {len(last_positions)} | {market_data_text_template}\n\n=== CANDLE TREND DATA ===\n{candle_data}\n\n{smc_section}\n\n=== LEVEL 2 ORDER BOOK INTELLIGENCE ===\n{dom_data}"
+    # ── ORDER FLOW IMBALANCE: Detect institutional HFT footprinting ──
+    ofi_value = 0.0
+    try:
+        ofi_value = await asyncio.to_thread(calculate_order_flow_imbalance, symbol)
+        ofi_label = "Aggressive Buying" if ofi_value > 0 else ("Toxic Distribution" if ofi_value < 0 else "Neutral")
+        print(f"[OFI] {symbol}: OFI={ofi_value:+.0f} ({ofi_label})")
+    except Exception as ofi_err:
+        print(f"[OFI] Sensor error (non-blocking): {ofi_err}")
+
+    # ── VPIN: Volume-Synchronized Probability of Informed Trading ──
+    vpin_data = {"vpin": 0.0, "is_toxic": False, "dominant_side": "BALANCED", "bucket_count": 0}
+    try:
+        vpin_data = await asyncio.to_thread(calculate_vpin, symbol)
+        vpin_val = vpin_data.get("vpin", 0.0)
+        vpin_toxic = "⚠ TOXIC" if vpin_data.get("is_toxic") else "Normal"
+        vpin_side = vpin_data.get("dominant_side", "BALANCED")
+        print(f"[VPIN] {symbol}: VPIN={vpin_val:.3f} ({vpin_toxic}) | Dominant: {vpin_side} | Buckets: {vpin_data.get('bucket_count', 0)}")
+    except Exception as vpin_err:
+        print(f"[VPIN] Sensor error (non-blocking): {vpin_err}")
+
+    vpin_section = f"VPIN: {vpin_data['vpin']:.3f} | Toxic: {vpin_data['is_toxic']} | Dominant: {vpin_data['dominant_side']}"
+
+    market_data_text = f"Current equity: ${last_equity['total']}, Positions: {len(last_positions)} | {market_data_text_template}\n\n=== CANDLE TREND DATA ===\n{candle_data}\n\n{smc_section}\n\n=== LEVEL 2 ORDER BOOK INTELLIGENCE ===\n{dom_data}\n\n=== ORDER FLOW IMBALANCE (OFI) ===\nOFI: {ofi_value:+.0f}\n\n=== VPIN (Informed Trading Probability) ===\n{vpin_section}"
 
 
     try:
@@ -741,13 +845,30 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
   }
         ]
         
-        # Category risk clamp: keep Forex TP reachable while letting wide assets breathe.
-        raw_sl = result.get("stop_loss_pct", 1.5)
-        raw_tp = result.get("take_profit_pct", 4.0)
-        clamped_sl, clamped_tp, _risk_profile = clamp_risk_to_symbol(symbol, raw_sl, raw_tp)
+        # ============================================================
+        # EXPLICIT UI SETTINGS OVERRIDE
+        # Strictly enforce the user's UI settings (SL/TP) instead of AI hallucinations
+        # ============================================================
+        params = _load_params_from_disk()
+        ui_sl = float(params.get("base_stop_loss_pct", 0.12))
+        ui_tp = float(params.get("base_take_profit_pct", 0.25))
+        
+        # Get asset class to dynamically scale the UI risk for highly volatile instruments
+        _, _, _risk_profile = clamp_risk_to_symbol(symbol, ui_sl, ui_tp)
         _asset_class = _risk_profile["class"]
-        if raw_sl != clamped_sl or raw_tp != clamped_tp:
-            print(f"[CLAMP] AI SL/TP clamped ({_asset_class}): SL {raw_sl}% â†’ {clamped_sl}% | TP {raw_tp}% â†’ {clamped_tp}%")
+        
+        multiplier = 1.0
+        if _asset_class in ("GOLD", "INDEX"):
+            multiplier = 2.5   # 0.08% * 2.5 = 0.20% (Gold requires wider breathing room)
+        elif _asset_class == "CRYPTO":
+            multiplier = 5.0   # 0.08% * 5.0 = 0.40%
+        elif _asset_class in ("SILVER", "ENERGY"):
+            multiplier = 3.0   # 0.08% * 3.0 = 0.24%
+            
+        clamped_sl = round(ui_sl * multiplier, 3)
+        clamped_tp = round(ui_tp * multiplier, 3)
+        
+        print(f"[UI OVERRIDE] Applied explicit UI settings for {_asset_class}: SL {clamped_sl}% | TP {clamped_tp}%")
         
         last_consensus = {
             "direction": action,
@@ -785,16 +906,11 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 print(f"[GATE-1] BLOCKED: Consensus {consensus_strength}% < {min_consensus}% threshold. Signal: {action} | Early={early_entry.get('reason')}")
                 entry_blocked = True
 
-        # --- GATE 1b: Direction Agreement (FIX #1) ---
-        if not entry_blocked:
-            macro_decision = result.get("_debug", {}).get("macro", {}).get("decision", "HOLD").upper()
-            scalper_decision = result.get("_debug", {}).get("scalper", {}).get("decision", "HOLD").upper()
-            expected_dir = "BUY" if action == "LONG" else "SELL"
-            if not (macro_decision == expected_dir and scalper_decision == expected_dir):
-                claw_sentiment = result.get("_debug", {}).get("sentiment", {}).get("sentiment", "NEUTRAL").upper()
-                claw_dir = "BUY" if claw_sentiment == "BULLISH" else ("SELL" if claw_sentiment == "BEARISH" else "HOLD")
-                print(f"[GATE-1b] BLOCKED: Direction DISAGREEMENT. Action={action} | CLAW={claw_dir} MACRO={macro_decision} SCALPER={scalper_decision}")
-                entry_blocked = True
+
+        # --- GATE 1b: REMOVED — Direction agreement is handled by validate_trend_start_entry()
+        # in brain.py with improved majority-voting logic. Keeping duplicate checks
+        # caused double-blocking when LM Studio returned HOLD (abstention, not opposition).
+
 
         # --- GATE 2: Full London/New York Session Filter (NY Time) ---
         if not entry_blocked:
@@ -807,13 +923,45 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping entry. Active session is London/New York 2:00 AM-5:00 PM NY.")
                 entry_blocked = True
 
-        # --- GATE 3: HTF Trend Filter (FIX #2) â€” H1 EMA20 vs EMA50 ---
+        # --- MOMENTUM BREAKOUT OVERRIDE ---
+        # Detect early session open breakouts to bypass slow H1 EMAs
+        trend_debug = result.get("_debug", {}).get("trend_bias", {}) or {}
+        per_tf = trend_debug.get("per_tf", {}) or {}
+        
+        def _tf_score(tf_name: str) -> int:
+            try:
+                return int(per_tf.get(tf_name, 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        score_5m = _tf_score("5m")
+        score_15m = _tf_score("15m")
+        score_1h = _tf_score("1h")
+        try:
+            trend_score = int(trend_debug.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            trend_score = 0
+
+        velocity_ratio = macro_matrix_state.get("velocity_ratio", 1.0)
+        
+        is_momentum_breakout = False
+        if action == "LONG":
+            is_momentum_breakout = velocity_ratio >= 1.25 and score_5m >= 15 and score_15m >= 5
+        elif action == "SHORT":
+            is_momentum_breakout = velocity_ratio >= 1.25 and score_5m <= -15 and score_15m <= -5
+
+        # --- GATE 3: HTF Trend Filter (FIX #2) — H1 EMA20 vs EMA50 ---
         h1_bias = ""
         if not entry_blocked:
             from core.macro_sensors import get_h1_trend_bias
             h1_data = get_h1_trend_bias(symbol)
             h1_bias = h1_data.get("bias", "SKIP")
             htf_allows = (action == "LONG" and h1_bias == "BUY") or (action == "SHORT" and h1_bias == "SELL")
+            
+            if not htf_allows and is_momentum_breakout:
+                print(f"[GATE-3] BYPASS: Session Open Momentum Breakout detected (Vel: {velocity_ratio:.2f}x, 5m: {score_5m:+d}). Overriding H1 bias={h1_bias}.")
+                htf_allows = True
+
             if not htf_allows:
                 print(f"[GATE-3] BLOCKED: HTF H1 bias={h1_bias} conflicts with {action}. {h1_data.get('reason', '')}")
                 entry_blocked = True
@@ -829,7 +977,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         # --- GATE 5: Early Pullback Continuation (green-circle entry) ---
         if not entry_blocked:
             if not early_entry.get("pass"):
-                print(f"[GATE-5] BLOCKED: Not an early pullback-continuation entry for {action}. {early_entry.get('reason')}")
+                print(f"[GATE-5] BLOCKED: Late chase detected. {early_entry.get('reason')}")
                 entry_blocked = True
             else:
                 print(f"[GATE-5] EARLY ENTRY OK: {early_entry.get('reason')}")
@@ -838,32 +986,20 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         # This is the final anti-SL filter for the "entered at the end of trend"
         # failure mode: do not let lean/mixed signals reach MT5.
         if not entry_blocked:
-            trend_debug = result.get("_debug", {}).get("trend_bias", {}) or {}
-            per_tf = trend_debug.get("per_tf", {}) or {}
-            try:
-                trend_score = int(trend_debug.get("score", 0) or 0)
-            except (TypeError, ValueError):
-                trend_score = 0
-
-            def _tf_score(tf_name: str) -> int:
-                try:
-                    return int(per_tf.get(tf_name, 0) or 0)
-                except (TypeError, ValueError):
-                    return 0
-
-            score_5m = _tf_score("5m")
-            score_15m = _tf_score("15m")
-            score_1h = _tf_score("1h")
-
             if action == "LONG":
-                mtf_aligned = score_5m >= 20 and score_15m >= 20 and score_1h >= 0
-                score_ok = trend_score >= 30
+                mtf_aligned = score_5m >= 10 and score_15m >= 10 and score_1h >= 0
+                score_ok = trend_score >= 15
             else:
-                mtf_aligned = score_5m <= -20 and score_15m <= -20 and score_1h <= 0
-                score_ok = trend_score <= -30
+                mtf_aligned = score_5m <= -10 and score_15m <= -10 and score_1h <= 0
+                score_ok = trend_score <= -15
+
+            if is_momentum_breakout:
+                print(f"[GATE-5b] BYPASS: Momentum Breakout detected. Bypassing slow 1H MTF alignment.")
+                score_ok = True
+                mtf_aligned = True
 
             if not (score_ok and mtf_aligned):
-                needed = ">= +30" if action == "LONG" else "<= -30"
+                needed = ">= +15" if action == "LONG" else "<= -15"
                 print(
                     f"[GATE-5b] BLOCKED: Trend start not strong/aligned enough for {action}. "
                     f"Weighted={trend_score:+d} (need {needed}); "
@@ -887,13 +1023,13 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 if _ps_bias_dir == _ps_last_dir or action == _ps_last_dir:
                     # Same direction as the closed stack â€” require strong trend confirmation
                     _ps_trend_score = abs(result.get("_debug", {}).get("trend_bias", {}).get("score", 0))
-                    if _ps_trend_score < 35:
+                    if _ps_trend_score < 20:
                         _ps_remaining = int(POST_STACK_WAIT - _ps_elapsed)
                         print(f"[GATE-6] POST-STACK BLOCKED: {symbol} re-entry {action} same direction as closed stack ({_ps_last_dir}). "
-                              f"Trend score {_ps_trend_score} < 35 threshold. Guard expires in {_ps_remaining}s.")
+                              f"Trend score {_ps_trend_score} < 20 threshold. Guard expires in {_ps_remaining}s.")
                         entry_blocked = True
                     else:
-                        print(f"[GATE-6] Post-stack {symbol}: Same direction {action} but trend score {_ps_trend_score} >= 35 â€” ALLOWED")
+                        print(f"[GATE-6] Post-stack {symbol}: Same direction {action} but trend score {_ps_trend_score} >= 20 â€” ALLOWED")
                 else:
                     print(f"[GATE-6] Post-stack {symbol}: Direction REVERSED ({_ps_last_dir} â†’ {action}) â€” ALLOWED (fresh signal)")
             else:
@@ -982,22 +1118,22 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         trend_score = result.get("_debug", {}).get("trend_bias", {}).get("score", 0)
                         abs_score = abs(trend_score)
 
-                        # Live capital protection: never scale risk up just because the account is small.
-                        # The screenshots showed many simultaneous micro positions losing together, so new
-                        # entries now risk only 0.20%-0.50% before the existing-position split is applied.
-                        if abs_score >= 45:
-                            base_risk = 0.005
-                        elif abs_score >= 35:
-                            base_risk = 0.0035
-                        else:
-                            base_risk = 0.002
+                        # ── KELLY CRITERION POSITION SIZING ──
+                        # Replaces flat 0.2-0.5% risk with mathematically optimal sizing.
+                        # Uses AI confidence + R:R ratio to compute edge, then applies
+                        # quarter-Kelly (25%) fraction for variance reduction.
+                        # Adapts live: if session win rate drops, Kelly fraction shrinks.
+                        rr_ratio = round(clamped_tp / clamped_sl, 2) if clamped_sl > 0 else 1.5
+                        session_stats = get_session_stats()
+                        kelly_rec = get_kelly_recommendation(session_stats, consensus_strength, rr_ratio)
+                        base_risk = kelly_rec["risk_pct"]
 
                         active_count = len(existing) if existing else 0
                         split_factor = 1.0 / (active_count + 1)
                         risk_pct = base_risk * split_factor
                         
                         max_risk_usd = acct_equity * risk_pct
-                        print(f"[TRADE:{t_account}] Dollar-Based Risk: Score {abs_score} -> Risk {base_risk*100:.2f}%, Split {active_count+1} -> {risk_pct*100:.2f}% (${max_risk_usd:.2f})")
+                        print(f"[KELLY:{t_account}] {kelly_rec['reason']} | R:R={rr_ratio:.1f} → Risk {base_risk*100:.3f}%, Split {active_count+1} → {risk_pct*100:.3f}% (${max_risk_usd:.2f})")
                         
                         symbol_info = await asyncio.to_thread(mt5.symbol_info, symbol)
                         if not symbol_info:
@@ -1183,10 +1319,7 @@ async def step_trailing_loop():
                                 else:
                                     realized_pnl = round((_entry - _exit) * _size, 4)
 
-                            if realized_pnl < 0:
-                                from core.brain import GLOBAL_COOLDOWNS
-                                GLOBAL_COOLDOWNS[str(_symbol)] = time.time() + 1800
-                                print(f"[GATEKEEPER] Asset {_symbol} in Cooldown. Skipping setup to prevent overtrading.")
+                            # Old loss-only hardcoded cooldown removed. Cooldowns are now managed globally per-stack.
 
                             db_close_reason = "manual"
                             if history:
@@ -1218,6 +1351,19 @@ async def step_trailing_loop():
                                 "account": account_name,
                                 "closed_at": history.get("exit_time") or datetime.now().isoformat()
                             }
+                            # ── COMPOUND LEARNING: Record outcome + classify failure ──
+                            trade_data["confidence"] = last_consensus.get("strength", 0)
+                            trade_data["sl_pct"] = last_consensus.get("stop_loss_pct", 0)
+                            trade_data["tp_pct"] = last_consensus.get("take_profit_pct", 0)
+                            record_trade_outcome(trade_data)
+                            record_closed_trade(
+                                symbol=_symbol, direction=_side, entry=_entry,
+                                exit_price=_exit, pnl=realized_pnl,
+                                confidence=last_consensus.get("strength", 0),
+                                exit_reason=db_close_reason,
+                                sl_pct=last_consensus.get("stop_loss_pct", 0),
+                                tp_pct=last_consensus.get("take_profit_pct", 0)
+                            )
                             asyncio.create_task(run_trade_autopsy(trade_data, last_market_data))
                             print(f"[BOT-PERF] XM manual close synced: {account_name}:{_symbol} ticket {ticket} {_side.upper()} @ ${_exit} | PnL: ${realized_pnl:+,.2f} | DB: {db_close_reason}")
                             del step_trail_state[k]
@@ -1228,8 +1374,10 @@ async def step_trailing_loop():
                             if not remaining_for_symbol and _symbol in stack_direction_lock:
                                 # FIX #6: Record closed stack direction + timestamp for post-stack reentry guard
                                 last_stack_direction[_symbol] = stack_direction_lock[_symbol]
-                                post_stack_cooldown[_symbol] = time.time()
-                                print(f"[POST-STACK] {_symbol}: Full stack closed ({stack_direction_lock[_symbol]}). Reentry guard active for {POST_STACK_WAIT}s.")
+                                from core.brain import GLOBAL_COOLDOWNS
+                                _cd_seconds = GLOBAL_COOLDOWN_MINUTES * 60
+                                GLOBAL_COOLDOWNS[str(_symbol)] = time.time() + _cd_seconds
+                                print(f"[POST-STACK] {_symbol}: Full stack closed. UI Cooldown active for {_cd_seconds}s.")
                                 del stack_direction_lock[_symbol]
                                 print(f"[STACK-LOCK] Direction lock RESET for {_symbol} â€” no remaining positions")
                             
@@ -1339,6 +1487,7 @@ async def step_trailing_loop():
                                 "current_tp": existing_exchange_tp,
                                 "sl_order_id": existing_sl_order_id,
                                 "last_api_update": 0,
+                                "secure_bag_extracted": recovered_tier >= 1,  # Already past breakeven on recovery
                             }
                             
                             if is_recovery:
@@ -1436,7 +1585,7 @@ async def step_trailing_loop():
                                     math_sl = candidate_sl
                                     math_wants_update = True
 
-                        # TIER 1: Breakeven lock
+                        # TIER 1: Breakeven lock + Secure Bag 50% Extraction
                         elif move_pct >= cfg["tier1_trigger_pct"] and state["current_tier"] < 1:
                             math_tier = 1
                             if side == "long":
@@ -1444,6 +1593,24 @@ async def step_trailing_loop():
                             else:
                                 math_sl = round(round(entry_price * (1 - cfg["tier1_sl_pct"] / 100) / tick) * tick, digits)
                             math_wants_update = True
+                            
+                            # ── SECURE BAG: Atomic 50% profit extraction at first profit tier ──
+                            if not state.get("secure_bag_extracted", False):
+                                import MetaTrader5 as _mt5_sb
+                                sb_order_type = _mt5_sb.ORDER_TYPE_BUY if side == "long" else _mt5_sb.ORDER_TYPE_SELL
+                                sb_success = await asyncio.to_thread(
+                                    _execute_secure_bag_partial,
+                                    int(product_id), symbol, state["size"], sb_order_type
+                                )
+                                if sb_success:
+                                    extracted_lots = round(state["size"] * 0.5, 2)
+                                    remaining_lots = round(state["size"] - extracted_lots, 2)
+                                    print(f"[SECURE-BAG] {account_name}:{symbol} Ticket #{product_id} | Extracted {extracted_lots} lots | Remaining {remaining_lots} lots")
+                                    state["secure_bag_extracted"] = True
+                                    state["size"] = remaining_lots
+                                    save_flight_state(step_trail_state, ai_predictive_traps, force=True)
+                                else:
+                                    print(f"[SECURE-BAG] WARNING: Partial close failed for {symbol} #{product_id}. SL move proceeds anyway.")
                         
                         # â”€â”€ CANDIDATE B: AI Predictive Trap SL â”€â”€
                         trap_sl = None
@@ -1685,7 +1852,7 @@ async def predictive_trap_loop():
                     direction_context = (
                         f"SIDE: LONG (price going UP = profit, price going DOWN = loss)\n"
                         f"CRITICAL GEOMETRY RULES â€” YOU MUST OBEY THESE OR FAIL:\n"
-                        f"1. predicted_trigger_price MUST BE > current_price ({current_price:.{digits}f}) â€” trigger is ABOVE current price where we expect price to reach\n"
+                        f"1. predicted_trigger_price MUST BE >= current_price ({current_price:.{digits}f}) â€” If you want to tighten the SL IMMEDIATELY due to a pullback, set predicted_trigger_price exactly equal to current_price.\n"
                         f"2. protective_sl_price MUST BE > current_sl ({current_sl:.{digits}f}) â€” new SL locks MORE profit by moving UP\n"
                         f"3. protective_sl_price MUST BE < predicted_trigger_price â€” SL is always BELOW the trigger target\n"
                         f"4. predicted_trigger_price MUST BE < tp_price ({tp_price:.{digits}f}) â€” trigger fires BEFORE take-profit\n"
@@ -1694,7 +1861,7 @@ async def predictive_trap_loop():
                     direction_context = (
                         f"SIDE: SHORT (price going DOWN = profit, price going UP = loss)\n"
                         f"CRITICAL GEOMETRY RULES â€” YOU MUST OBEY THESE OR FAIL:\n"
-                        f"1. predicted_trigger_price MUST BE < current_price ({current_price:.{digits}f}) â€” trigger is BELOW current price where we expect price to drop to\n"
+                        f"1. predicted_trigger_price MUST BE <= current_price ({current_price:.{digits}f}) â€” If you want to tighten the SL IMMEDIATELY due to a pullback, set predicted_trigger_price exactly equal to current_price.\n"
                         f"2. protective_sl_price MUST BE < current_sl ({current_sl:.{digits}f}) â€” new SL locks MORE profit by moving DOWN (lower number = tighter protection for shorts)\n"
                         f"3. protective_sl_price MUST BE > predicted_trigger_price â€” SL is always ABOVE the trigger target\n"
                         f"4. predicted_trigger_price MUST BE > tp_price ({tp_price:.{digits}f}) â€” trigger fires BEFORE take-profit\n"
@@ -1786,13 +1953,13 @@ async def predictive_trap_loop():
                         # LONG traps fire when price rises into trigger; SHORT traps fire when price falls into trigger.
                         valid_trap = False
                         if side == "long":
-                            valid_trap = trigger > current_price and protective_sl > current_sl and protective_sl < trigger
+                            valid_trap = trigger >= current_price and protective_sl > current_sl and protective_sl < trigger
                         elif side == "short":
-                            valid_trap = trigger < current_price and protective_sl < current_sl and protective_sl > trigger
+                            valid_trap = trigger <= current_price and protective_sl < current_sl and protective_sl > trigger
                         
                         if not valid_trap:
                             print(f"  [AI-TRAP] REJECTED: Trap direction invalid for {side.upper()}")
-                            print(f"  Trigger: {trigger:.{digits}f} (current: {current_price:.{digits}f}) | Need: {'trigger > current' if side == 'long' else 'trigger < current'}")
+                            print(f"  Trigger: {trigger:.{digits}f} (current: {current_price:.{digits}f}) | Need: {'trigger >= current' if side == 'long' else 'trigger <= current'}")
                             print(f"  Protective SL: {protective_sl:.{digits}f} (current SL: {current_sl:.{digits}f}) | Need: {'current_sl < SL < trigger' if side == 'long' else 'trigger < SL < current_sl'}")
                             continue
                         
@@ -2129,6 +2296,7 @@ async def market_data_loop():
                     "equity": last_equity,
                     "consensus": last_consensus,
                     "margin": last_margin,
+                    "fleet_symbols": TARGET_SYMBOLS,
                     "market_data": market_data,
                     "active_symbol": market_data.get("symbol", TARGET_SYMBOLS[0]) if market_data else TARGET_SYMBOLS[0],
                     "macro_matrix": macro_matrix_state,
@@ -2152,7 +2320,9 @@ async def market_data_loop():
                     "circuit_breaker": last_risk_status["circuit_breaker"],
                     "circuit_reason": last_risk_status["circuit_reason"],
                     "drawdown_pct": last_risk_status["drawdown_pct"],
-                    "time_until_reset": last_risk_status["time_until_reset"]
+                    "time_until_reset": last_risk_status["time_until_reset"],
+                    # SESSION PERFORMANCE SCOREBOARD
+                    "session_performance": get_session_stats(),
                 }
                     })
 
@@ -2180,6 +2350,94 @@ async def market_data_loop():
         # Sleep before next cycle
         await asyncio.sleep(FLEET_SCAN_DELAY)
 
+async def state_broadcast_loop():
+    """Independent fast loop to broadcast live updates to the UI, bypassing AI rate limits."""
+    # Give MT5 and market_data_loop 5 seconds to initialize IPC connection fully
+    await asyncio.sleep(5)
+    
+    while True:
+        try:
+            # ── FAST MT5 REFRESH: Update equity/positions/margin every 2s ──
+            import MetaTrader5 as mt5
+            if mt5.terminal_info() is not None:
+                try:
+                    acc = await asyncio.to_thread(mt5.account_info)
+                    if acc and acc.equity > 0:
+                        last_equity["total"] = round(acc.equity, 2)
+                        last_equity["daily_pnl"] = round(acc.profit, 2)
+                        last_equity["daily_change_pct"] = round((acc.profit / acc.equity) * 100, 2) if acc.equity > 0 else 0
+                        last_margin["available_margin"] = round(acc.margin_free or 0, 2)
+                        last_margin["total_balance"] = round(acc.equity, 2)
+                        last_margin["used_margin"] = round(acc.margin or 0, 2)
+                        last_margin["unrealized_pnl"] = round(acc.profit, 2)
+                    
+                    pos_raw = await asyncio.to_thread(mt5.positions_get)
+                    if pos_raw is not None:
+                        refreshed = []
+                        for p in pos_raw:
+                            refreshed.append({
+                                "ticket": p.ticket,
+                                "symbol": p.symbol,
+                                "side": "LONG" if p.type == 0 else "SHORT",
+                                "volume": p.volume,
+                                "entry_price": round(p.price_open, 5),
+                                "mark_price": round(p.price_current, 5),
+                                "pnl": round(p.profit, 2),
+                                "sl": round(p.sl, 5) if p.sl else 0,
+                                "tp": round(p.tp, 5) if p.tp else 0,
+                                "swap": round(p.swap, 2),
+                                "magic": p.magic,
+                                "comment": p.comment or "",
+                            })
+                        last_positions[:] = refreshed
+                except Exception:
+                    pass  # Silently skip - will use cached values
+            
+            _logs_to_send = list(server_log_buffer)
+            market_data_ref = dict(last_market_data) if last_market_data else {}
+            market_data_ref["last_price"] = live_market_price
+            
+            await manager.broadcast({
+                "type": "market_update",
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "swarm_decisions": last_swarm_decisions,
+                    "positions": last_positions,
+                    "equity": last_equity,
+                    "consensus": last_consensus,
+                    "margin": last_margin,
+                    "fleet_symbols": TARGET_SYMBOLS,
+                    "market_data": market_data_ref,
+                    "active_symbol": market_data_ref.get("symbol", TARGET_SYMBOLS[0]),
+                    "macro_matrix": macro_matrix_state,
+                    "trading_enabled": trading_enabled,
+                    "dry_run": exchange.DRY_RUN,
+                    "trade_count": len(trade_log),
+                    "account_balances": account_balances,
+                    "step_trail": build_step_trail_snapshot(),
+                    "ai_traps": {k: {"trigger": v["predicted_trigger_price"], "protective_sl": v["protective_sl_price"], "reasoning": v.get("reasoning", "")[:100], "side": v.get("side", ""), "executed": v.get("executed", False), "set_at": v.get("set_at", 0)} for k, v in ai_predictive_traps.items()},
+                    "nvidia_api_stats": {
+                        "rpm": nvidia_api_stats["rpm"],
+                        "rpm_limit": nvidia_api_stats["rpm_limit"],
+                        "calls_total": nvidia_api_stats["calls_total"],
+                        "last_call": nvidia_api_stats["last_call_time"]
+                    },
+                    "server_logs": _logs_to_send,
+                    "bot_performance": await _get_bot_perf_for_broadcast(),
+                    "killswitch_active": last_risk_status["killswitch_active"],
+                    "killswitch_reason": last_risk_status["killswitch_reason"],
+                    "circuit_breaker": last_risk_status["circuit_breaker"],
+                    "circuit_reason": last_risk_status["circuit_reason"],
+                    "drawdown_pct": last_risk_status["drawdown_pct"],
+                    "time_until_reset": last_risk_status["time_until_reset"]
+                }
+            })
+
+        except Exception as e:
+            print(f"Error in state broadcast loop: {e}")
+        
+        await asyncio.sleep(2)
+
 
 
 @app.on_event("startup")
@@ -2197,6 +2455,7 @@ async def startup_event():
     print(f"[FLIGHT-RECORDER] State loaded from disk. Resuming tracking for {len(step_trail_state)} positions.")
     
     print(f"[STARTUP] Server started.")
+    asyncio.create_task(state_broadcast_loop())
     asyncio.create_task(market_data_loop())
     asyncio.create_task(step_trailing_loop())
     asyncio.create_task(predictive_trap_loop())
@@ -2398,6 +2657,59 @@ async def close_all_profitable(request: Request):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/market-schedule")
+async def get_market_schedule():
+    now = datetime.utcnow()
+    utc_decimal = now.hour + now.minute / 60.0
+    
+    active_sessions = []
+    
+    for s in SESSION_CONFIGS:
+        is_active = False
+        if s["open"] < s["close"]:
+            if s["open"] <= utc_decimal < s["close"]:
+                is_active = True
+        else:
+            if utc_decimal >= s["open"] or utc_decimal < s["close"]:
+                is_active = True
+                
+        if is_active:
+            active_sessions.append(s["id"])
+            
+    # Calculate IST offset (UTC + 5:30)
+    def utc_to_ist_str(utc_h):
+        total_mins = int(utc_h * 60) + 330
+        h = (total_mins // 60) % 24
+        m = total_mins % 60
+        ampm = "AM" if h < 12 else "PM"
+        display_h = h if h <= 12 else h - 12
+        if display_h == 0: display_h = 12
+        return f"{display_h}:{m:02d} {ampm}"
+        
+    sessions_ist = []
+    for s in SESSION_CONFIGS:
+        sessions_ist.append({
+            "id": s["id"],
+            "label": s["label"],
+            "open_ist": utc_to_ist_str(s["open"]),
+            "close_ist": utc_to_ist_str(s["close"]),
+            "pairs": s["pairs"],
+            "is_active": s["id"] in active_sessions
+        })
+        
+    ist_time = now + timedelta(hours=5, minutes=30)
+    
+    return {
+        "success": True,
+        "utc_time": now.strftime("%H:%M UTC"),
+        "ist_time": ist_time.strftime("%I:%M %p IST"),
+        "active_sessions": active_sessions,
+        "sessions": sessions_ist,
+        "active_pairs": list(get_current_session_pairs()),
+        "is_gap": len(active_sessions) == 0
+    }
+
+
 @app.get("/")
 async def root():
     return {"message": "Apex Institutional API", "status": "online"}
@@ -2592,12 +2904,12 @@ _PARAMS_FILE = os.path.join(os.path.expanduser("~"), ".apex_trader", "apex_param
 
 FOREX_DEFAULTS = {
     "mode": "forex",
-    "max_risk_pct": 0.5,
-    "base_take_profit_pct": 0.08,
-    "base_stop_loss_pct": 0.04,
+    "max_risk_pct": 2.0,
+    "base_take_profit_pct": 0.25,
+    "base_stop_loss_pct": 0.12,
     "max_leverage": 10,
-    "max_open_positions": 2,
-    "cooldown_minutes": 30,
+    "max_open_positions": 1,
+    "cooldown_minutes": 45,
     "auto_rebalance": True,
     "stop_loss_enabled": True,
     "take_profit_enabled": True,
@@ -2623,11 +2935,6 @@ def _load_params_from_disk():
             with open(_PARAMS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict) and "mode" in data:
-                if data.get("mode") == "forex" and data.get("base_take_profit_pct") == 0.3 and data.get("base_stop_loss_pct") == 0.15:
-                    data["base_take_profit_pct"] = FOREX_DEFAULTS["base_take_profit_pct"]
-                    data["base_stop_loss_pct"] = FOREX_DEFAULTS["base_stop_loss_pct"]
-                    _save_params_to_disk(data)
-                    print("[PARAMS] Migrated Forex defaults: SL=0.04%, TP=0.08%")
                 if data.get("mode") == "forex":
                     changed = False
                     if float(data.get("max_risk_pct", FOREX_DEFAULTS["max_risk_pct"])) > FOREX_DEFAULTS["max_risk_pct"]:
@@ -2641,7 +2948,7 @@ def _load_params_from_disk():
                         changed = True
                     if changed:
                         _save_params_to_disk(data)
-                        print("[PARAMS] Applied Forex safety clamp: risk<=0.5%, max_per_symbol<=2, cooldown>=30min")
+                        print("[PARAMS] Applied Forex safety clamp: risk<=2%, max_per_symbol<=1, cooldown>=45min")
                 return data
     except Exception as e:
         print(f"[PARAMS] Load error: {e}")
@@ -2666,9 +2973,10 @@ def _save_params_to_disk(params: dict):
 
 def _hot_reload_params(params: dict):
     """Hot-reload globals from saved parameters â€” no restart needed."""
-    global MAX_POSITIONS_PER_SYMBOL
+    global MAX_POSITIONS_PER_SYMBOL, GLOBAL_COOLDOWN_MINUTES
     MAX_POSITIONS_PER_SYMBOL = max(1, min(2, int(params.get("max_open_positions", 2))))
-    print(f"[PARAMS] Hot-reloaded: max_per_symbol={MAX_POSITIONS_PER_SYMBOL}, SL={params.get('base_stop_loss_pct')}%, TP={params.get('base_take_profit_pct')}%, cooldown={params.get('cooldown_minutes')}min, mode={params.get('mode')}")
+    GLOBAL_COOLDOWN_MINUTES = max(1, int(params.get("cooldown_minutes", 30)))
+    print(f"[PARAMS] Hot-reloaded: max_per_symbol={MAX_POSITIONS_PER_SYMBOL}, SL={params.get('base_stop_loss_pct')}%, TP={params.get('base_take_profit_pct')}%, cooldown={GLOBAL_COOLDOWN_MINUTES}min, mode={params.get('mode')}")
 
 
 @app.get("/api/parameters")
@@ -2840,7 +3148,7 @@ async def get_claw_intelligence():
 # Scrape fresh news and analyze
     try:
         from core.brain import get_market_sentiment
-        result = await get_market_sentiment(OPENROUTER_API_KEY)
+        result = await get_market_sentiment(NVIDIA_API_KEY_3)
 
         claw_data = {
             "sentiment": result.get("sentiment", "NEUTRAL"),
@@ -3312,6 +3620,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "equity": last_equity,
                         "consensus": last_consensus,
                         "margin": last_margin,
+                        "fleet_symbols": TARGET_SYMBOLS,
                         "server_logs": list(server_log_buffer),
                         "trading_enabled": trading_enabled,
                         "dry_run": exchange.DRY_RUN,

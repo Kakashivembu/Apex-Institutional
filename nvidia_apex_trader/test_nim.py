@@ -9,7 +9,7 @@ keys = {
     "Scalper AI": os.getenv("NVIDIA_API_KEY", ""),
     "Trend Follower AI": os.getenv("NVIDIA_API_KEY_2", ""),
     "Chat AI": os.getenv("NVIDIA_CHAT_KEY", ""),
-    "Fundamental Desk AI": os.getenv("OPENROUTER_API_KEY", "") # Holds your nvapi- key
+    "Fundamental Desk AI": os.getenv("NVIDIA_API_KEY_3", "") # Holds your nvapi- key
 }
 
 url = "https://integrate.api.nvidia.com/v1/chat/completions"

@@ -4,12 +4,14 @@ import {
   BarChart3, 
   Database, 
   Key, 
-  Settings 
+  Settings,
+  Clock
 } from 'lucide-react';
 
 const Sidebar = ({ activeTab, setActiveTab }) => {
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'dashboard', label: 'Command Center', icon: LayoutDashboard },
+    { id: 'schedules', label: 'Time Schedules', icon: Clock },
     { id: 'backtest', label: 'Backtest', icon: BarChart3 },
     { id: 'fundamentals', label: 'Fundamentals', icon: Database },
     { id: 'api-keys', label: 'API Keys', icon: Key },

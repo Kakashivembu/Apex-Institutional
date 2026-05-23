@@ -5,7 +5,7 @@ ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
 
 AI_ROLES = {
     "chat": "NVIDIA_CHAT_KEY",
-    "fundamental": "OPENROUTER_API_KEY",
+    "fundamental": "NVIDIA_API_KEY_3",
     "scalper": "NVIDIA_API_KEY",
     "trend": "NVIDIA_API_KEY_2"
 }
@@ -14,7 +14,7 @@ def get_ai_keys():
     dotenv.load_dotenv(ENV_PATH, override=True)
     return {
         "chat": os.getenv("NVIDIA_CHAT_KEY", ""),
-        "fundamental": os.getenv("OPENROUTER_API_KEY", ""),
+        "fundamental": os.getenv("NVIDIA_API_KEY_3", ""),
         "scalper": os.getenv("NVIDIA_API_KEY", ""),
         "trend": os.getenv("NVIDIA_API_KEY_2", "")
     }
@@ -47,9 +47,9 @@ def refresh_in_memory_keys():
         import core.brain
         core.brain.NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
         core.brain.NVIDIA_API_KEY_2 = os.getenv("NVIDIA_API_KEY_2", "")
-        core.brain.OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+        core.brain.NVIDIA_API_KEY_3 = os.getenv("NVIDIA_API_KEY_3", "")
         
-        core.brain.NVIDIA_KEYS = [k for k in [core.brain.NVIDIA_API_KEY, core.brain.NVIDIA_API_KEY_2] if k]
+        core.brain.NVIDIA_KEYS = [k for k in [core.brain.NVIDIA_API_KEY, core.brain.NVIDIA_API_KEY_2, core.brain.NVIDIA_API_KEY_3] if k]
     except ImportError:
         pass
 

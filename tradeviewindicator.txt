@@ -1,0 +1,279 @@
+//@version=5
+strategy("Apex Institutional A+ Strategy [Silver Bullet Edition]", overlay=true, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=1, currency=currency.USD, commission_value=0.0, max_boxes_count=500, max_lines_count=500)
+
+// =========================================================================
+// CLEAN COLORS & UI SETUP
+// =========================================================================
+colGreen = color.rgb(34, 197, 94, 0)
+colRed = color.rgb(239, 68, 68, 0)
+colBlue = color.rgb(59, 130, 246, 0)
+colOrange = color.rgb(249, 115, 22, 0)
+colWhite = color.rgb(255, 255, 255, 0)
+colGray = color.rgb(128, 128, 128, 0)
+colBlack = color.rgb(0, 0, 0, 0)
+
+colTransGreen = color.new(colGreen, 85)
+colTransRed = color.new(colRed, 85)
+colTransBlue = color.new(colBlue, 85)
+colTransOrange = color.new(colOrange, 85)
+
+// =========================================================================
+// SETTINGS & INPUTS
+// =========================================================================
+grp_risk = "Risk Management"
+inpRiskPct = input.float(1.0, title="Risk Per Trade (%)", step=0.1, group=grp_risk)
+inpRR = input.float(1.5, title="Risk:Reward Ratio", step=0.1, group=grp_risk)
+inpSLMultiplier = input.float(1.0, title="Minimum ATR Stop Buffer", step=0.1, group=grp_risk)
+
+grp_time = "Session Killzones"
+inpLondonOpen = input.int(7, title="London Open (UTC Hour)", group=grp_time)
+inpNYClose = input.int(21, title="New York Close (UTC Hour)", group=grp_time)
+
+grp_ind = "Indicators"
+emaFastLen = input.int(20, title="Fast EMA", group=grp_ind)
+emaSlowLen = input.int(50, title="Slow EMA", group=grp_ind)
+emaMacroLen = input.int(200, title="Macro Trend EMA (200)", group=grp_ind)
+
+// =========================================================================
+// TIME FILTERING
+// =========================================================================
+currentHourUTC = hour(time, "UTC")
+canTradeTime = (currentHourUTC >= inpLondonOpen and currentHourUTC < inpNYClose)
+
+// =========================================================================
+// CORE LOGIC & INDICATORS
+// =========================================================================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaMacro = ta.ema(close, emaMacroLen)
+atr = ta.atr(14)
+
+bullishTrend = emaFast > emaSlow
+bearishTrend = emaFast < emaSlow
+macroBullish = close > emaMacro
+macroBearish = close < emaMacro
+momentumValid = (high - low) > (atr * 0.8)
+
+// =========================================================================
+// LIQUIDITY SWEEP ENGINE (THE A+ FILTER)
+// =========================================================================
+// Reduced pivot length to 5 to generate more trade opportunities
+pivotLength = 5
+pivotHigh = ta.pivothigh(high, pivotLength, pivotLength)
+pivotLow = ta.pivotlow(low, pivotLength, pivotLength)
+
+var float lastPivotHigh = na
+var float lastPivotLow = na
+var int barsSinceSweepBullish = 9999
+var int barsSinceSweepBearish = 9999
+
+if not na(pivotHigh)
+    lastPivotHigh := pivotHigh
+if not na(pivotLow)
+    lastPivotLow := pivotLow
+
+if not na(lastPivotLow) and ta.crossunder(low, lastPivotLow)
+    barsSinceSweepBullish := 0
+else
+    barsSinceSweepBullish += 1
+
+if not na(lastPivotHigh) and ta.crossover(high, lastPivotHigh)
+    barsSinceSweepBearish := 0
+else
+    barsSinceSweepBearish += 1
+
+// =========================================================================
+// SMC ENGINE: FAIR VALUE GAPS (FVG)
+// =========================================================================
+// Increased lookback for sweep to 30 to allow more trades
+bullishFVG = low > high[2] and close[1] > open[1] and (low - high[2]) > (atr * 0.3) and barsSinceSweepBullish <= 30
+bearishFVG = high < low[2] and close[1] < open[1] and (low[2] - high) > (atr * 0.3) and barsSinceSweepBearish <= 30
+
+var box[] fvgBullBoxes = array.new_box()
+var box[] fvgBearBoxes = array.new_box()
+maxBoxes = 10
+
+if bullishFVG
+    // Fixed Box Misalignment: Removed extend.right
+    b = box.new(left=bar_index[2], top=low, bottom=high[2], right=bar_index + 5, border_color=colGreen, bgcolor=colTransGreen)
+    array.push(fvgBullBoxes, b)
+    if array.size(fvgBullBoxes) > maxBoxes
+        box.delete(array.shift(fvgBullBoxes))
+
+if bearishFVG
+    b = box.new(left=bar_index[2], top=low[2], bottom=high, right=bar_index + 5, border_color=colRed, bgcolor=colTransRed)
+    array.push(fvgBearBoxes, b)
+    if array.size(fvgBearBoxes) > maxBoxes
+        box.delete(array.shift(fvgBearBoxes))
+
+// Update right edge for active boxes
+if array.size(fvgBullBoxes) > 0
+    for i = array.size(fvgBullBoxes) - 1 to 0
+        b = array.get(fvgBullBoxes, i)
+        if low < box.get_top(b) 
+            array.remove(fvgBullBoxes, i) 
+        else
+            box.set_right(b, bar_index + 5)
+
+if array.size(fvgBearBoxes) > 0
+    for i = array.size(fvgBearBoxes) - 1 to 0
+        b = array.get(fvgBearBoxes, i)
+        if high > box.get_bottom(b) 
+            array.remove(fvgBearBoxes, i)
+        else
+            box.set_right(b, bar_index + 5)
+
+// =========================================================================
+// SMC ENGINE: ORDER BLOCKS (OB)
+// =========================================================================
+impulsiveBullish = close > open and (close - open) > atr * 1.2
+impulsiveBearish = close < open and (open - close) > atr * 1.2
+
+isBullishOB = impulsiveBullish and close[1] < open[1] and barsSinceSweepBullish <= 30
+isBearishOB = impulsiveBearish and close[1] > open[1] and barsSinceSweepBearish <= 30
+
+var box[] obBullBoxes = array.new_box()
+var box[] obBearBoxes = array.new_box()
+
+if isBullishOB
+    b = box.new(left=bar_index[1], top=high[1], bottom=low[1], right=bar_index + 5, border_color=colBlue, bgcolor=colTransBlue)
+    array.push(obBullBoxes, b)
+    if array.size(obBullBoxes) > maxBoxes
+        box.delete(array.shift(obBullBoxes))
+
+if isBearishOB
+    b = box.new(left=bar_index[1], top=high[1], bottom=low[1], right=bar_index + 5, border_color=colOrange, bgcolor=colTransOrange)
+    array.push(obBearBoxes, b)
+    if array.size(obBearBoxes) > maxBoxes
+        box.delete(array.shift(obBearBoxes))
+
+if array.size(obBullBoxes) > 0
+    for i = array.size(obBullBoxes) - 1 to 0
+        b = array.get(obBullBoxes, i)
+        if close < box.get_bottom(b) 
+            array.remove(obBullBoxes, i)
+        else
+            box.set_right(b, bar_index + 5)
+
+if array.size(obBearBoxes) > 0
+    for i = array.size(obBearBoxes) - 1 to 0
+        b = array.get(obBearBoxes, i)
+        if close > box.get_top(b) 
+            array.remove(obBearBoxes, i)
+        else
+            box.set_right(b, bar_index + 5)
+
+// =========================================================================
+// ENTRY LOGIC: STRICT SMC REJECTION
+// =========================================================================
+mitigatingBullishSMC = false
+mitigatingBearishSMC = false
+
+if array.size(obBullBoxes) > 0
+    for i = 0 to array.size(obBullBoxes) - 1
+        b = array.get(obBullBoxes, i)
+        if low <= box.get_top(b) and high >= box.get_bottom(b) and close > open
+            mitigatingBullishSMC := true
+
+if array.size(fvgBullBoxes) > 0
+    for i = 0 to array.size(fvgBullBoxes) - 1
+        b = array.get(fvgBullBoxes, i)
+        if low <= box.get_top(b) and high >= box.get_bottom(b) and close > open
+            mitigatingBullishSMC := true
+
+if array.size(obBearBoxes) > 0
+    for i = 0 to array.size(obBearBoxes) - 1
+        b = array.get(obBearBoxes, i)
+        if high >= box.get_bottom(b) and low <= box.get_top(b) and close < open
+            mitigatingBearishSMC := true
+
+if array.size(fvgBearBoxes) > 0
+    for i = 0 to array.size(fvgBearBoxes) - 1
+        b = array.get(fvgBearBoxes, i)
+        if high >= box.get_bottom(b) and low <= box.get_top(b) and close < open
+            mitigatingBearishSMC := true
+
+longCondition  = canTradeTime and macroBullish and bullishTrend and mitigatingBullishSMC and momentumValid
+shortCondition = canTradeTime and macroBearish and bearishTrend and mitigatingBearishSMC and momentumValid
+
+// =========================================================================
+// EXECUTION & STRUCTURAL RISK MANAGEMENT
+// =========================================================================
+riskAmount = (strategy.initial_capital * (inpRiskPct / 100))
+var float activeSL = na
+var float activeTP = na
+
+if (longCondition and strategy.position_size == 0)
+    // Tighter structural stop loss to ensure TP gets hit faster (10 bars instead of 20)
+    structuralLow = ta.lowest(low, 10)
+    slDistance = math.max(close - structuralLow, atr * inpSLMultiplier) 
+    longSL = close - slDistance
+    longTP = close + (slDistance * inpRR)
+    
+    qtyLong = riskAmount / slDistance
+    strategy.entry("Apex_Long", strategy.long, qty=qtyLong)
+    activeSL := longSL
+    activeTP := longTP
+
+if (shortCondition and strategy.position_size == 0)
+    structuralHigh = ta.highest(high, 10)
+    slDistance = math.max(structuralHigh - close, atr * inpSLMultiplier)
+    shortSL = close + slDistance
+    shortTP = close - (slDistance * inpRR)
+    
+    qtyShort = riskAmount / slDistance
+    strategy.entry("Apex_Short", strategy.short, qty=qtyShort)
+    activeSL := shortSL
+    activeTP := shortTP
+
+// Exit Management (TP/SL + End of Day Close)
+if strategy.position_size > 0
+    strategy.exit("Exit_Long", "Apex_Long", stop=activeSL, limit=activeTP)
+if strategy.position_size < 0
+    strategy.exit("Exit_Short", "Apex_Short", stop=activeSL, limit=activeTP)
+
+// Close trades at the end of the session to prevent holding all day into chop
+if currentHourUTC >= inpNYClose and strategy.position_size != 0
+    strategy.close_all(comment="End of Session Close")
+
+if strategy.position_size == 0
+    activeSL := na
+    activeTP := na
+
+// =========================================================================
+// VISUALS & PLOTS
+// =========================================================================
+// EXPLICIT BUY/SELL SIGNALS ON CHART
+plotshape(longCondition and strategy.position_size == 0, title="Buy Signal", style=shape.triangleup, location=location.belowbar, color=colGreen, size=size.normal, text="BUY")
+plotshape(shortCondition and strategy.position_size == 0, title="Sell Signal", style=shape.triangledown, location=location.abovebar, color=colRed, size=size.normal, text="SELL")
+
+plot(strategy.position_size != 0 ? activeSL : na, title="Stop Loss", color=colRed, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size != 0 ? activeTP : na, title="Take Profit", color=colGreen, style=plot.style_linebr, linewidth=2)
+
+plot(emaFast, title="Fast EMA", color=colWhite, linewidth=2)
+plot(emaSlow, title="Slow EMA", color=colBlue, linewidth=2)
+plot(emaMacro, title="Macro 200 EMA", color=colOrange, linewidth=3)
+
+barColorVal = bullishTrend ? colGreen : bearishTrend ? colRed : colGray
+barcolor(barColorVal)
+
+// Dashboard Overlay
+var table dash = table.new(position.top_right, 2, 6, border_width = 1, border_color=colGray)
+if barstate.islast
+    table.cell(dash, 0, 0, "Apex SMC Status", text_color=colWhite, bgcolor=colBlack)
+    table.cell(dash, 1, 0, canTradeTime ? "SCANNING" : "OFF MARKET", text_color=canTradeTime ? colGreen : colGray, bgcolor=colBlack)
+    
+    table.cell(dash, 0, 1, "Liquidity Cycle", text_color=colWhite, bgcolor=colBlack)
+    table.cell(dash, 1, 1, barsSinceSweepBullish <= 30 ? "BULLISH SWEEP" : barsSinceSweepBearish <= 30 ? "BEARISH SWEEP" : "BUILDING", text_color=barsSinceSweepBullish <= 30 ? colGreen : barsSinceSweepBearish <= 30 ? colRed : colGray, bgcolor=colBlack)
+
+    table.cell(dash, 0, 2, "Macro Bias", text_color=colWhite, bgcolor=colBlack)
+    table.cell(dash, 1, 2, macroBullish ? "BULLISH" : macroBearish ? "BEARISH" : "FLAT", text_color=macroBullish ? colGreen : macroBearish ? colRed : colGray, bgcolor=colBlack)
+    
+    table.cell(dash, 0, 3, "Micro Bias", text_color=colWhite, bgcolor=colBlack)
+    table.cell(dash, 1, 3, bullishTrend ? "BULLISH" : bearishTrend ? "BEARISH" : "FLAT", text_color=bullishTrend ? colGreen : bearishTrend ? colRed : colGray, bgcolor=colBlack)
+    
+    table.cell(dash, 0, 4, "SMC Target", text_color=colWhite, bgcolor=colBlack)
+    table.cell(dash, 1, 4, mitigatingBullishSMC ? "REJECTING BULLISH SMC" : mitigatingBearishSMC ? "REJECTING BEARISH SMC" : "WAITING", text_color=mitigatingBullishSMC ? colGreen : mitigatingBearishSMC ? colRed : colGray, bgcolor=colBlack)
+    
+    table.cell(dash, 0, 5, "Daily Risk", text_color=colWhite, bgcolor=colBlack)
+    table.cell(dash, 1, 5, str.tostring(inpRiskPct) + "%", text_color=colWhite, bgcolor=colBlack)
