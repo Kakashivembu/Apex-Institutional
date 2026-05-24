@@ -866,48 +866,34 @@ async def call_lm_studio_direct(prompt: str) -> dict:
         import os
         async with aiohttp.ClientSession() as session:
             lm_payload = {
-                "model": "local-model",
+                "model": "meta/llama-3.1-70b-instruct",
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
                 "stream": False
             }
-            lm_key = os.getenv("LM_STUDIO_API_KEY", "")
-            headers = {"Content-Type": "application/json"}
-            if lm_key:
-                headers["Authorization"] = f"Bearer {lm_key}"
+            forge_url = os.getenv("FORGE_PROXY_URL", "http://localhost:8081/v1/chat/completions")
+            api_key = os.getenv("NVIDIA_API_KEY", "")
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
                 
-                
-            async with session.post("http://127.0.0.1:1234/v1/chat/completions", json=lm_payload, headers=headers, timeout=300) as resp:
+            async with session.post(forge_url, json=lm_payload, headers=headers, timeout=300) as resp:
                 if resp.status == 200:
                     lm_data = await resp.json()
                     message_obj = lm_data["choices"][0]["message"]
                     lm_content = message_obj.get("content", "")
                     
-                    # If content is empty but it has reasoning_content (common with Qwen/DeepSeek reasoning models)
                     if not lm_content and "reasoning_content" in message_obj:
                         lm_content = message_obj["reasoning_content"]
                         
+                    # Forge proxy guarantees valid JSON. We just strip potential markdown wrappers.
                     lm_content = lm_content.replace('```json', '').replace('```', '').strip()
                     
-                    # Try to extract JSON if it wrapped it in thoughts
-                    json_str = ""
-                    in_json = False
-                    for line in lm_content.split('\n'):
-                        line = line.strip()
-                        if line.startswith('{'):
-                            in_json = True
-                        if in_json:
-                            json_str += line
-                        if line.endswith('}'):
-                            in_json = False
-                            
-                    if not json_str:
-                        json_str = lm_content
-                        
                     try:
-                        return json.loads(json_str)
+                        return json.loads(lm_content)
                     except json.JSONDecodeError:
-                        return {"decision": "HOLD", "confidence": 0, "reasoning": "JSON parse error from LM Studio"}
+                        return {"decision": "HOLD", "confidence": 0, "reasoning": "JSON parse error from Forge Proxy"}
                 else:
                     return {"decision": "HOLD", "confidence": 0, "reasoning": f"LM Studio HTTP {resp.status}"}
     except Exception as e:
@@ -918,11 +904,11 @@ async def call_lm_studio_direct(prompt: str) -> dict:
 
 async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_name="apex_trader") -> dict:
     """
-    Communicates with the local Hermes CLI via WSL subprocess.
-    Maintains persistent state using the provided session flag.
-    Simulates streaming to the frontend while waiting for the subprocess.
+    Communicates with the Forge Guardrails proxy.
+    The proxy handles model routing, JSON formatting, and fallback rescue-parsing automatically.
     """
-    import tempfile
+    import aiohttp
+    import json
     import os
     import asyncio
     
@@ -933,165 +919,59 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
         asyncio.create_task(broadcast_callback({
             "type": "hermes_activity",
             "agent_status": "analyzing",
-            "message": "Hermes is evaluating market conditions...",
+            "message": "AI Agents routing through Forge Proxy...",
             "reasoning": "Loading DOM and macro sensors into working memory...\nChecking open interest and toxicity metrics...\n"
         }))
 
-    # Write prompt to a temp file to avoid bash escaping issues
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
-        f.write(prompt)
-        temp_path = f.name
-        
-    wsl_path = temp_path.replace("C:\\", "/mnt/c/").replace("\\", "/")
+    forge_url = os.getenv("FORGE_PROXY_URL", "http://localhost:8081/v1/chat/completions")
+    api_key = os.getenv("NVIDIA_API_KEY", "")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
     
-    # Write the bash script to another temp file
-    bash_script = f'''#!/bin/bash
-export PATH="/home/hyper/.local/bin:$PATH"
-P=$(cat "{wsl_path}")
-OUTPUT=$(hermes -c {session_name} -z "$P" 2>&1)
-if [[ "$OUTPUT" == *"No session found"* ]]; then
-    OUTPUT=$(hermes -z "$P" 2>&1)
-    NEW_ID=$(hermes sessions list | grep -oE '^[0-9a-f]{{8}}' | head -n1)
-    if [ ! -z "$NEW_ID" ]; then
-        hermes sessions rename "$NEW_ID" "{session_name}" >/dev/null 2>&1
-    fi
-fi
-echo "$OUTPUT"
-'''
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh', encoding='utf-8', newline='\n') as f_sh:
-        f_sh.write(bash_script)
-        sh_path = f_sh.name
-        
-    wsl_sh_path = sh_path.replace("C:\\", "/mnt/c/").replace("\\", "/")
+    # Construct an OpenAI-compatible payload. Forge ignores model or routes it properly.
+    proxy_payload = {
+        "model": "meta/llama-3.1-70b-instruct",
+        "messages": payload["messages"],
+        "temperature": 0.0,
+    }
 
     try:
-        cmd = f'bash "{wsl_sh_path}"'
-        
-        # Periodic "thinking" updates to keep UI alive
-        async def ui_keepalive():
-            dots = 1
-            while True:
-                await asyncio.sleep(2)
-                if broadcast_callback:
-                    await broadcast_callback({
-                        "type": "hermes_activity",
-                        "agent_status": "processing",
-                        "message": f"Running quantitative models{'.' * dots}",
-                        "reasoning": ""
-                    })
-                dots = (dots % 3) + 1
-
-        keepalive_task = asyncio.create_task(ui_keepalive())
-
-        import subprocess
-        creationflags = 0
-        if os.name == 'nt':
-            creationflags = subprocess.CREATE_NO_WINDOW
-            
-        process = await asyncio.create_subprocess_exec(
-            'wsl.exe', '-u', 'hyper', 'bash', '-lc', cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            creationflags=creationflags
-        )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
-        
-        keepalive_task.cancel()
-        
-        output = stdout.decode('utf-8').strip()
-        error_output = stderr.decode('utf-8').strip()
-        
-        if error_output:
-            print(f"[HERMES CLI STDERR] {error_output}")
-            
-        # Try to parse the JSON block from output
-        json_str = ""
-        in_json = False
-        for line in output.split('\n'):
-            line = line.strip()
-            if line.startswith('{'):
-                in_json = True
-            if in_json:
-                json_str += line
-            if line.endswith('}'):
-                in_json = False
-                
-        if not json_str:
-            json_str = output # Fallback if no clean brackets
-            
-        if "429" in output or "Too Many Requests" in output:
-            print("[HERMES RATE LIMIT] API provider 429 Rate Limit hit. Falling back to Local LM Studio.")
-            if broadcast_callback:
-                await broadcast_callback({
-                    "type": "hermes_activity",
-                    "agent_status": "processing",
-                    "message": "NVIDIA 429 Rate Limit Hit. Routing to LM Studio Fallback...",
-                    "reasoning": "Primary API exhausted. Using local offline model for consensus."
-                })
-                
-            try:
-                import aiohttp
-                import os
-                async with aiohttp.ClientSession() as session:
-                    lm_payload = {
-                        "model": "local-model",
-                        "messages": [{"role": "user", "content": prompt}],
-                        "temperature": 0.0,
-                        "stream": False
-                    }
-                    lm_key = os.getenv("LM_STUDIO_API_KEY", "")
-                    headers = {"Content-Type": "application/json"}
-                    if lm_key:
-                        headers["Authorization"] = f"Bearer {lm_key}"
-                        
-                    async with session.post("http://127.0.0.1:1234/v1/chat/completions", json=lm_payload, headers=headers, timeout=60) as resp:
-                        if resp.status == 200:
-                            lm_data = await resp.json()
-                            lm_content = lm_data["choices"][0]["message"]["content"]
-                            
-                            # Clean up potential markdown formatting from LM Studio
-                            lm_content = lm_content.replace('```json', '').replace('```', '').strip()
-                            try:
-                                json_str = lm_content
-                                result = json.loads(json_str)
-                                print("[LM STUDIO FALLBACK] Successfully parsed fallback evaluation.")
-                                return result
-                            except json.JSONDecodeError as e:
-                                print(f"[LM STUDIO FALLBACK] JSON Parse Error: {e}")
-                                return {"decision": "HOLD", "confidence": 0, "leverage": 1, "stop_loss_pct": 1.0, "take_profit_pct": 2.0, "entry_price": 0.0}
-                        else:
-                            err_txt = await resp.text()
-                            print(f"[LM STUDIO FALLBACK] Failed with status {resp.status}: {err_txt}")
-                            return {"decision": "HOLD", "confidence": 0, "leverage": 1, "stop_loss_pct": 1.0, "take_profit_pct": 2.0, "entry_price": 0.0}
-            except Exception as e:
-                print(f"[LM STUDIO FALLBACK] Connection Error: {e}")
-                return {"decision": "HOLD", "confidence": 0, "leverage": 1, "stop_loss_pct": 1.0, "take_profit_pct": 2.0, "entry_price": 0.0}
-            
-        try:
-            result = json.loads(json_str)
-            
-            if broadcast_callback:
-                await broadcast_callback({
-                    "type": "hermes_activity",
-                    "agent_status": "complete",
-                    "message": "Evaluation complete.",
-                    "reasoning": f"Final Decision: {result.get('decision', 'UNKNOWN')} | Confidence: {result.get('confidence', 0)}%\nSL: {result.get('stop_loss_pct', 0)}% | TP: {result.get('take_profit_pct', 0)}%"
-                })
-                
-            return result
-        except json.JSONDecodeError as e:
-            print(f"[HERMES CLI ERROR] Failed to parse JSON: {e}\nRaw Output: {output}")
-            return {}
-
+        async with aiohttp.ClientSession() as session:
+            async with session.post(forge_url, json=proxy_payload, headers=headers, timeout=120) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    content = data["choices"][0]["message"]["content"]
+                    
+                    # Forge guarantees valid JSON, but we clean potential markdown block wrappers
+                    clean_content = content.replace('```json', '').replace('```', '').strip()
+                    result = json.loads(clean_content)
+                    
+                    if broadcast_callback:
+                        await broadcast_callback({
+                            "type": "hermes_activity",
+                            "agent_status": "complete",
+                            "message": "Evaluation complete.",
+                            "reasoning": f"Final Decision: {result.get('decision', 'UNKNOWN')} | Confidence: {result.get('confidence', 0)}%\nSL: {result.get('stop_loss_pct', 0)}% | TP: {result.get('take_profit_pct', 0)}%"
+                        })
+                    return result
+                else:
+                    error_text = await resp.text()
+                    print(f"[FORGE PROXY HTTP {resp.status}] {error_text}")
+                    
+                    if broadcast_callback:
+                        await broadcast_callback({
+                            "type": "hermes_activity",
+                            "agent_status": "error",
+                            "message": f"Forge Proxy HTTP {resp.status}",
+                            "reasoning": "Proxy failed to respond cleanly."
+                        })
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Forge Proxy HTTP {resp.status}"}
     except Exception as e:
-        print(f"[HERMES CLI EXCEPTION] {e}")
-        return {}
-    finally:
-        try:
-            os.remove(temp_path)
-            os.remove(sh_path)
-        except:
-            pass
+        print(f"[FORGE PROXY ERROR] {e}")
+        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Forge Proxy Exception: {str(e)}"}
 
 async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None) -> dict:
     """
