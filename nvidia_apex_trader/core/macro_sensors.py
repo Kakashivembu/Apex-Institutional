@@ -1218,3 +1218,118 @@ def detect_liquidity_sweep(rates: list, lookback_period: int = 50) -> dict:
     )
     return _default
 
+# =============================================================================
+# LUXALGO SMC PORT: Equal Highs/Lows, Premium/Discount Zones, BOS/CHoCH
+# =============================================================================
+
+def detect_equal_highs_lows(candles: list, atr: float = 0.0, threshold_pct: float = 0.001) -> str:
+    """
+    Detects Retail Liquidity Pools (Equal Highs or Equal Lows) that act as magnets for Smart Money.
+    """
+    if len(candles) < 10: return ""
+    
+    highs = []
+    lows = []
+    for i in range(2, len(candles) - 2):
+        try:
+            c = candles[i]
+            c_h = float(c.get('high', 0))
+            c_l = float(c.get('low', 0))
+            
+            # Fractal High
+            if c_h > float(candles[i-1].get('high', 0)) and c_h > float(candles[i-2].get('high', 0)) and \
+               c_h > float(candles[i+1].get('high', 0)) and c_h > float(candles[i+2].get('high', 0)):
+                highs.append(c_h)
+                
+            # Fractal Low
+            if c_l < float(candles[i-1].get('low', 0)) and c_l < float(candles[i-2].get('low', 0)) and \
+               c_l < float(candles[i+1].get('low', 0)) and c_l < float(candles[i+2].get('low', 0)):
+                lows.append(c_l)
+        except Exception:
+            continue
+            
+    eqh_found = []
+    for i in range(len(highs)):
+        for j in range(i+1, len(highs)):
+            if abs(highs[i] - highs[j]) / (highs[i] or 1) <= threshold_pct:
+                eqh_found.append(max(highs[i], highs[j]))
+                
+    eql_found = []
+    for i in range(len(lows)):
+        for j in range(i+1, len(lows)):
+            if abs(lows[i] - lows[j]) / (lows[i] or 1) <= threshold_pct:
+                eql_found.append(min(lows[i], lows[j]))
+                
+    res = []
+    if eqh_found:
+        eqh = sorted(eqh_found)[-1]
+        res.append(f"EQUAL HIGHS (Buy-Side Liquidity) ~${eqh:,.2f}")
+    if eql_found:
+        eql = sorted(eql_found)[0]
+        res.append(f"EQUAL LOWS (Sell-Side Liquidity) ~${eql:,.2f}")
+        
+    return " | ".join(res)
+
+def detect_premium_discount_zones(candles: list, current_price: float) -> str:
+    """
+    Calculates the macro Equilibrium (50%) of the recent range.
+    """
+    if not candles: return ""
+    
+    try:
+        highs = [float(c.get('high', 0)) for c in candles if float(c.get('high', 0)) > 0]
+        lows = [float(c.get('low', 0)) for c in candles if float(c.get('low', 0)) > 0]
+        
+        if not highs or not lows: return ""
+        
+        macro_high = max(highs)
+        macro_low = min(lows)
+        range_size = macro_high - macro_low
+        
+        if range_size <= 0: return ""
+        
+        equilibrium = macro_low + (range_size / 2)
+        position_pct = ((current_price - macro_low) / range_size) * 100
+        
+        if position_pct > 60:
+            zone = "PREMIUM (Expensive - Favorable for SHORTS)"
+        elif position_pct < 40:
+            zone = "DISCOUNT (Cheap - Favorable for LONGS)"
+        else:
+            zone = "EQUILIBRIUM (Fair Value - Choppy)"
+            
+        return f"Zone: {zone} | Level: {position_pct:.1f}% of range (${macro_low:,.0f} - ${macro_high:,.0f})"
+    except Exception:
+        return ""
+
+def detect_market_structure(candles: list, current_price: float) -> str:
+    """
+    Programmatically flags Break of Structure (BOS) / Change of Character (CHoCH).
+    """
+    if len(candles) < 20: return ""
+    
+    try:
+        highs = []
+        lows = []
+        for i in range(2, len(candles) - 2):
+            c_h = float(candles[i].get('high', 0))
+            c_l = float(candles[i].get('low', 0))
+            if c_h > float(candles[i-1].get('high', 0)) and c_h > float(candles[i+1].get('high', 0)):
+                highs.append(c_h)
+            if c_l < float(candles[i-1].get('low', 0)) and c_l < float(candles[i+1].get('low', 0)):
+                lows.append(c_l)
+                
+        if not highs or not lows: return ""
+        
+        last_high = highs[-1]
+        last_low = lows[-1]
+        
+        if current_price > last_high:
+            return f"BULLISH BOS/CHoCH: Price breached recent swing high (${last_high:,.2f})"
+        elif current_price < last_low:
+            return f"BEARISH BOS/CHoCH: Price breached recent swing low (${last_low:,.2f})"
+        
+        return "Structure: Ranging within recent swing points."
+    except Exception:
+        return ""
+

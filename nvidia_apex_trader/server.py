@@ -59,7 +59,7 @@ from core.backtester import run_historical_backtest
 from core.optimizer import run_grid_search
 from core.flight_recorder import save_flight_state, load_flight_state
 from core.data import fetch_dom_imbalance, fetch_multi_timeframe, fetch_candles_sync
-from core.macro_sensors import detect_fair_value_gaps, detect_order_blocks, calculate_order_flow_imbalance, calculate_vpin
+from core.macro_sensors import detect_fair_value_gaps, detect_order_blocks, calculate_order_flow_imbalance, calculate_vpin, detect_equal_highs_lows, detect_premium_discount_zones, detect_market_structure
 from core.news_shield import check_news_killswitch
 from core.risk_manager import check_circuit_breaker, get_circuit_status, reset_circuit_breaker, force_reset, midnight_reset_loop
 from core.mt5_engine import (
@@ -772,6 +772,25 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             from core.macro_sensors import detect_asian_range
             asian_range_str = detect_asian_range(raw_1h, current)
             smc_section += f"\n\n=== ICT LIQUIDITY & AMD PATTERN ===\n{asian_range_str}"
+            
+            # --- LUXALGO SMC INTEGRATION ---
+            eqh_eql_str = detect_equal_highs_lows(raw_1h, atr=0, threshold_pct=0.001)
+            pd_zones_str = detect_premium_discount_zones(raw_1h, current)
+            structure_str = detect_market_structure(raw_1h, current)
+            
+            luxalgo_lines = []
+            if eqh_eql_str:
+                luxalgo_lines.append(f"LIQUIDITY POOLS: {eqh_eql_str}")
+                print(f"[SMC-LUX] {eqh_eql_str}")
+            if pd_zones_str:
+                luxalgo_lines.append(f"PREMIUM/DISCOUNT: {pd_zones_str}")
+                print(f"[SMC-LUX] {pd_zones_str}")
+            if structure_str:
+                luxalgo_lines.append(f"MARKET STRUCTURE: {structure_str}")
+                print(f"[SMC-LUX] {structure_str}")
+                
+            if luxalgo_lines:
+                smc_section += "\n\n=== ADVANCED SMC (LUXALGO) ===\n" + "\n".join(luxalgo_lines)
             
         else:
             smc_section = "=== INSTITUTIONAL SMC LEVELS ===\nCandle data unavailable."
