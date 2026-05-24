@@ -871,14 +871,14 @@ async def call_lm_studio_direct(prompt: str) -> dict:
                 "temperature": 0.0,
                 "stream": False
             }
-            forge_url = os.getenv("FORGE_PROXY_URL", "http://localhost:8081/v1/chat/completions")
-            api_key = os.getenv("NVIDIA_API_KEY", "")
+            lm_url = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1/chat/completions")
+            api_key = os.getenv("LM_STUDIO_API_KEY", "lm-studio")
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
             }
                 
-            async with session.post(forge_url, json=lm_payload, headers=headers, timeout=300) as resp:
+            async with session.post(lm_url, json=lm_payload, headers=headers, timeout=300) as resp:
                 if resp.status == 200:
                     lm_data = await resp.json()
                     message_obj = lm_data["choices"][0]["message"]
@@ -964,14 +964,23 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
                     if broadcast_callback:
                         await broadcast_callback({
                             "type": "hermes_activity",
-                            "agent_status": "error",
-                            "message": f"Forge Proxy HTTP {resp.status}",
-                            "reasoning": "Proxy failed to respond cleanly."
+                            "agent_status": "generating_strategy",
+                            "message": f"Forge Proxy HTTP {resp.status}. Falling back to LM Studio...",
+                            "reasoning": "Proxy failed. Engaging local fallback."
                         })
-                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Forge Proxy HTTP {resp.status}"}
+                    print(f"[{session_name.upper()}] Falling back to LM Studio due to HTTP {resp.status}...")
+                    return await call_lm_studio_direct(payload["messages"][0]["content"])
     except Exception as e:
         print(f"[FORGE PROXY ERROR] {e}")
-        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Forge Proxy Exception: {str(e)}"}
+        if broadcast_callback:
+            await broadcast_callback({
+                "type": "hermes_activity",
+                "agent_status": "generating_strategy",
+                "message": f"Forge Proxy Exception. Falling back to LM Studio...",
+                "reasoning": "Proxy failed. Engaging local fallback."
+            })
+        print(f"[{session_name.upper()}] Falling back to LM Studio due to Exception...")
+        return await call_lm_studio_direct(payload["messages"][0]["content"])
 
 async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None) -> dict:
     """
