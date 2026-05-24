@@ -975,16 +975,22 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
     skills_path = "/mnt/f/NEW NVdia Apex Ultimate/.agent/skills.md"
     
     try:
+        import subprocess
+        creationflags = 0
+        if os.name == 'nt':
+            creationflags = subprocess.CREATE_NO_WINDOW
+
         process = await asyncio.create_subprocess_exec(
             "wsl", "--", "/home/hyper/.hermes/hermes-agent/venv/bin/python", "-m", "hermes_cli.main", 
             "chat", "-Q", "-q", prompt, "-s", skills_path, "--yolo", "--accept-hooks",
             "--provider", "nvidia", "-m", "meta/llama-3.1-70b-instruct",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            creationflags=creationflags,
             env=env
         )
         
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
         
         if process.returncode != 0:
             err_msg = stderr.decode('utf-8')
