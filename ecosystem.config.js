@@ -1,3 +1,13 @@
+const fs = require('fs');
+let nvidiaKey = process.env.NVIDIA_API_KEY || "";
+try {
+  const envFile = fs.readFileSync('./nvidia_apex_trader/.env', 'utf8');
+  const match = envFile.match(/NVIDIA_API_KEY\s*=\s*["']?(nvapi-[a-zA-Z0-9_\-]+)["']?/);
+  if (match) nvidiaKey = match[1];
+} catch (e) {
+  // Ignored
+}
+
 module.exports = {
   apps: [
     {
@@ -62,8 +72,8 @@ module.exports = {
       error_file: "./logs/forge-error.log",
       env: {
         PYTHONUNBUFFERED: "1",
-        OPENAI_API_KEY: process.env.NVIDIA_API_KEY || "",
-        NVIDIA_API_KEY: process.env.NVIDIA_API_KEY || ""
+        OPENAI_API_KEY: nvidiaKey,
+        NVIDIA_API_KEY: nvidiaKey
       }
     }
   ]
