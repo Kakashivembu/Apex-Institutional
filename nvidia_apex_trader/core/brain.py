@@ -887,13 +887,32 @@ async def call_lm_studio_direct(prompt: str) -> dict:
                     if not lm_content and "reasoning_content" in message_obj:
                         lm_content = message_obj["reasoning_content"]
                         
-                    # Forge proxy guarantees valid JSON. We just strip potential markdown wrappers.
-                    lm_content = lm_content.replace('```json', '').replace('```', '').strip()
+                    # Local models might add conversational text around the JSON.
+                    # Use regex to extract everything between the first { and last }
+                    import re
+                    match = re.search(r'\{.*\}', lm_content, re.DOTALL)
+                    if match:
+                        lm_content = match.group(0)
+                    else:
+                        lm_content = lm_content.replace('```json', '').replace('```', '').strip()
                     
                     try:
-                        return json.loads(lm_content)
+                        # Clean unescaped literal newlines which break json.loads
+                        clean_json = lm_content.replace('\n', ' ')
+                        return json.loads(clean_json)
                     except json.JSONDecodeError:
-                        return {"decision": "HOLD", "confidence": 0, "reasoning": "JSON parse error from Forge Proxy"}
+                        # Robust rescue via Regex for cut-off or badly formed JSON
+                        import re
+                        decision_match = re.search(r'"decision"\s*:\s*"([A-Z]+)"', lm_content, re.IGNORECASE)
+                        conf_match = re.search(r'"confidence"\s*:\s*(\d+)', lm_content)
+                        
+                        if decision_match:
+                            return {
+                                "decision": decision_match.group(1).upper(),
+                                "confidence": int(conf_match.group(1)) if conf_match else 50,
+                                "reasoning": "Rescued via Regex from broken JSON output."
+                            }
+                        return {"decision": "HOLD", "confidence": 0, "reasoning": "LM Studio generated completely invalid output"}
                 else:
                     return {"decision": "HOLD", "confidence": 0, "reasoning": f"LM Studio HTTP {resp.status}"}
     except Exception as e:
