@@ -62,8 +62,8 @@ module.exports = {
       error_file: "./logs/forge-error.log",
       env: {
         PYTHONUNBUFFERED: "1",
-        OPENAI_API_KEY: "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",
-        NVIDIA_API_KEY: "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"
+        OPENAI_API_KEY: process.env.NVIDIA_API_KEY || "",
+        NVIDIA_API_KEY: process.env.NVIDIA_API_KEY || ""
       }
     }
   ]
