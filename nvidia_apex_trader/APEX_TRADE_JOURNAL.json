@@ -382,5 +382,41 @@
     "tier_reached": 0,
     "confidence": 0,
     "failure_class": "WEAK_SIGNAL"
+  },
+  {
+    "timestamp": "2026-05-23T13:43:32.130560",
+    "symbol": "USDJPY.x",
+    "direction": "LONG",
+    "entry": 159.134,
+    "exit": 159.04,
+    "pnl": -6.41,
+    "exit_reason": "tp",
+    "tier_reached": 0,
+    "confidence": 50,
+    "failure_class": "WEAK_SIGNAL"
+  },
+  {
+    "timestamp": "2026-05-23T18:32:43.352442",
+    "symbol": "BTCUSD.x",
+    "direction": "LONG",
+    "entry": 74801.3,
+    "exit": 74808.78,
+    "pnl": 0.07,
+    "exit_reason": "manual",
+    "tier_reached": 1,
+    "confidence": 52,
+    "failure_class": "PROFITABLE"
+  },
+  {
+    "timestamp": "2026-05-24T17:04:54.872673",
+    "symbol": "BTCUSD.x",
+    "direction": "SHORT",
+    "entry": 77221.46,
+    "exit": 77283.24,
+    "pnl": -1.24,
+    "exit_reason": "manual",
+    "tier_reached": 0,
+    "confidence": 56,
+    "failure_class": "WEAK_SIGNAL"
   }
 ]

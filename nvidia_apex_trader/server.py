@@ -71,15 +71,15 @@ from core.mt5_engine import (
 # =============================================================================
 # MT5 CONFIGURATION - Pure MetaTrader 5 Operation
 # =============================================================================
-# Broker-specific symbol maps â€” auto-selected based on connected MT5 server
+# Broker-specific symbol maps — auto-selected based on connected MT5 server
 BROKER_SYMBOL_MAPS = {
     "xmglobal": [
-        "GOLD.i#",
+        "BTCUSD#", "GOLD.i#",
         "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#",
         "GBPJPY#", "EURGBP#", "AUDJPY#", "NZDJPY#"
     ],
     "goatfunded": [
-        "XAUUSD.x",
+        "BTCUSD.x", "XAUUSD.x",
         "EURUSD.x", "GBPUSD.x", "USDJPY.x", "AUDUSD.x", "USDCAD.x", "USDCHF.x", "NZDUSD.x",
         "GBPJPY.x", "EURGBP.x", "AUDJPY.x", "NZDJPY.x"
     ],
@@ -195,6 +195,11 @@ def get_active_scan_symbols() -> list:
         # If no pairs are active, return an empty list
         return filtered
         
+    elif mode == "crypto":
+        # Strictly return ONLY crypto symbols to save tokens on weekends
+        return [sym for sym in TARGET_SYMBOLS if _is_crypto_symbol(sym)]
+        
+    # Fallback for "all" or any other mode
     return list(TARGET_SYMBOLS)
 
 FLEET_SCAN_DELAY = 10
@@ -808,7 +813,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             active_positions=last_positions,
             force_run=False,
             active_symbol=symbol,
-            live_asset_price=live_market_price
+            live_asset_price=live_market_price,
+            broadcast_callback=manager.broadcast
         )
         
         # Track NVIDIA NIM API usage (3 calls per consensus: CLAW + Macro + Scalper)
@@ -820,59 +826,59 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         
         last_swarm_decisions = [
             {
-                "agent": "CLAW",
-                "name": "Fundamental Desk",
-                "decision": result.get("_debug", {}).get("sentiment", {}).get("sentiment", "NEUTRAL"),
-                "confidence": result.get("_debug", {}).get("sentiment", {}).get("confidence", 50),
-                "signal": f"Sentiment: {result.get('_debug', {}).get('sentiment', {}).get('report', 'N/A')}",
+                "agent": "HERMES_GATEWAY",
+                "name": "Hermes Institutional Agent",
+                "decision": action,
+                "confidence": result.get("confidence", 50),
+                "signal": f"Entry: ${result.get('entry_price', live_market_price):,.2f}",
                 "status": "strong"
-            },
-            {
-                "agent": "NVIDIA_MACRO",
-                "name": "Macro Trend Follower",
-                "decision": result.get("_debug", {}).get("macro", {}).get("decision", "HOLD"),
-                "confidence": result.get("_debug", {}).get("macro", {}).get("confidence", 50),
-                "signal": f"Trend analysis",
-                "status": "strong"
-    },
-      {
-      "agent": "NVIDIA_SCALPER",
-      "name": "NVIDIA Scalper",
-      "decision": result.get("_debug", {}).get("scalper", {}).get("decision", "HOLD"),
-      "confidence": result.get("_debug", {}).get("scalper", {}).get("confidence", 50),
-      "signal": f"Entry: ${result.get('_debug', {}).get('scalper', {}).get('entry_price') or (f'{live_market_price:,.2f}' if live_market_price > 0 else 'N/A')}",
-      "status": "strong"
-  }
+            }
         ]
         
         # ============================================================
-        # EXPLICIT UI SETTINGS OVERRIDE
-        # Strictly enforce the user's UI settings (SL/TP) instead of AI hallucinations
+        # DYNAMIC RISK CLAMPING (GoatFunded Challenge-Safe)
+        # Uses get_asset_limits() per asset class instead of static UI multipliers.
+        # In CHALLENGE_MODE, the AI's sweep-derived SL anchor is used.
         # ============================================================
+        from core.brain import get_asset_limits, CHALLENGE_MODE, GOATFUNDED_MAX_DRAWDOWN_PCT
+        asset_limits = get_asset_limits(symbol)
+        _asset_class = asset_limits["asset_class"]
+        
         params = _load_params_from_disk()
         ui_sl = float(params.get("base_stop_loss_pct", 0.12))
         ui_tp = float(params.get("base_take_profit_pct", 0.25))
         
-        # Get asset class to dynamically scale the UI risk for highly volatile instruments
-        _, _, _risk_profile = clamp_risk_to_symbol(symbol, ui_sl, ui_tp)
-        _asset_class = _risk_profile["class"]
-        
-        multiplier = 1.0
-        if _asset_class in ("GOLD", "INDEX"):
-            multiplier = 2.5   # 0.08% * 2.5 = 0.20% (Gold requires wider breathing room)
-        elif _asset_class == "CRYPTO":
-            multiplier = 5.0   # 0.08% * 5.0 = 0.40%
-        elif _asset_class in ("SILVER", "ENERGY"):
-            multiplier = 3.0   # 0.08% * 3.0 = 0.24%
+        if CHALLENGE_MODE:
+            # In CHALLENGE_MODE: Use the AI's calculated SL/TP from the sweep anchor,
+            # clamped within the asset's safe limits. Ignore frontend dashboard defaults.
+            ai_sl = result.get("stop_loss_pct", asset_limits["min_sl"])
+            ai_tp = result.get("take_profit_pct", asset_limits["min_tp"])
             
-        clamped_sl = round(ui_sl * multiplier, 3)
-        clamped_tp = round(ui_tp * multiplier, 3)
-        
-        print(f"[UI OVERRIDE] Applied explicit UI settings for {_asset_class}: SL {clamped_sl}% | TP {clamped_tp}%")
-        
+            # Clamp: floor at asset min, ceiling at GoatFunded max drawdown
+            clamped_sl = round(max(asset_limits["min_sl"], min(float(ai_sl), asset_limits["max_sl"])), 3)
+            clamped_tp = round(max(asset_limits["min_tp"], float(ai_tp)), 3)
+            
+            # Enforce minimum 2:1 R:R for challenge safety
+            if clamped_tp < clamped_sl * 2.0:
+                clamped_tp = round(clamped_sl * 2.0, 3)
+            
+            print(f"[RISK-MANAGER] Dynamic Risk Clamping Active: {_asset_class} | "
+                  f"CHALLENGE_MODE SL: {clamped_sl}% (limit: {asset_limits['max_sl']}%) | TP: {clamped_tp}%")
+        else:
+            # Standard mode: Use UI params clamped within asset-safe limits
+            clamped_sl = round(max(asset_limits["min_sl"], min(ui_sl, asset_limits["max_sl"])), 3)
+            clamped_tp = round(max(asset_limits["min_tp"], ui_tp), 3)
+            
+            # Enforce minimum 1.5:1 R:R
+            if clamped_tp < clamped_sl * 1.5:
+                clamped_tp = round(clamped_sl * 1.5, 3)
+            
+            print(f"[RISK-MANAGER] Dynamic Risk Clamping Active: {_asset_class} | "
+                  f"UI SL: {ui_sl}% -> Clamped: {clamped_sl}% (limit: {asset_limits['max_sl']}%) | TP: {clamped_tp}%")
+
         last_consensus = {
             "direction": action,
-            "strength": calculate_consensus().get("strength", 50),
+            "strength": result.get("confidence", 50),
             "stop_loss_pct": clamped_sl,
             "take_profit_pct": clamped_tp,
             "leverage": result.get("leverage", 10),
@@ -1127,6 +1133,13 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         session_stats = get_session_stats()
                         kelly_rec = get_kelly_recommendation(session_stats, consensus_strength, rr_ratio)
                         base_risk = kelly_rec["risk_pct"]
+
+                        # CBT Framework: Probability of Ruin Circuit Breaker
+                        prob_ruin = session_stats.get("probability_of_ruin", 0.0)
+                        if prob_ruin > 5.0:
+                            print(f"[CIRCUIT BREAKER] Probability of Ruin at {prob_ruin}% (> 5%). Dynamically halving kelly risk fraction!")
+                            base_risk *= 0.5
+                            kelly_rec['reason'] += " [CIRCUIT BREAKER: RISK HALVED]"
 
                         active_count = len(existing) if existing else 0
                         split_factor = 1.0 / (active_count + 1)

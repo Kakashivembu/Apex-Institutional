@@ -50,6 +50,17 @@ MAX_MEMORY_MESSAGES = 10
 FLIGHT_RECORDER_FILE = "apex_flight_state.json"
 GLOBAL_COOLDOWNS = {}
 
+# CHALLENGE MODE — GoatFunded $1,000 challenge (max -$20 drawdown)
+# When True, the A+ Gatekeeper mandates an Institutional Liquidity Sweep
+# (Turtle Soup / Judas Swing) before any trade can pass. This enforces
+# extreme 1:10 R/R asymmetry by requiring the tightest possible SL anchor.
+CHALLENGE_MODE = os.getenv("CHALLENGE_MODE", "True").lower() in ("true", "1", "yes")
+print(f"[BRAIN] CHALLENGE_MODE: {CHALLENGE_MODE} (Liquidity Sweep Gate {'ACTIVE' if CHALLENGE_MODE else 'DISABLED'})")
+
+# GoatFunded absolute max drawdown: -$20 on $1,000 = 2.0% of account
+# No trade's SL percentage may exceed this limit.
+GOATFUNDED_MAX_DRAWDOWN_PCT = 2.0
+
 # =============================================================================
 # GLOBAL NVIDIA NIM RATE LIMITER (Token Bucket per API key)
 # =============================================================================
@@ -124,7 +135,7 @@ BLOCKRUN_PROXY = "http://127.0.0.1:8402"
 BLOCKRUN_AUTH = "x402-proxy-handles-auth"
 BLOCKRUN_FREE_MODEL = "meta/llama-4-maverick"
 
-LOCAL_LLM_URL = "http://127.0.0.1:1234/v1/chat/completions"
+LOCAL_LLM_URL = os.getenv("LM_STUDIO_URL", "http://127.0.0.1:1234/v1/chat/completions")
 
 WAKE_CYCLES_REMAINING = 0
 
@@ -408,6 +419,39 @@ def clamp_risk_to_symbol(symbol: str, sl_pct, tp_pct) -> tuple[float, float, dic
     return round(sl, 3), round(tp, 3), profile
 
 
+def get_asset_limits(symbol: str) -> dict:
+    """
+    Returns the GoatFunded-safe dynamic SL/TP limits per asset class.
+    These limits are designed to protect the -$20 max drawdown on a $1,000 account.
+    The final_sl_pct must NEVER exceed GOATFUNDED_MAX_DRAWDOWN_PCT (2.0%).
+    """
+    sym = (symbol or "").upper()
+    profile = get_symbol_risk_profile(symbol)
+    asset_class = profile["class"]
+
+    # Asset-specific minimum SL/TP (the tightest safe breathing room)
+    limits = {
+        "GOLD":          {"min_sl": 0.25, "min_tp": 0.40, "max_sl": 1.50},
+        "SILVER":        {"min_sl": 0.30, "min_tp": 0.50, "max_sl": 1.50},
+        "INDEX":         {"min_sl": 0.25, "min_tp": 0.40, "max_sl": 1.50},
+        "ENERGY":        {"min_sl": 0.30, "min_tp": 0.50, "max_sl": 1.50},
+        "CRYPTO":        {"min_sl": 0.50, "min_tp": 1.50, "max_sl": 2.00},
+        "FOREX_MAJOR":   {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00},
+        "FOREX_JPY":     {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00},
+        "FOREX_CROSS":   {"min_sl": 0.15, "min_tp": 0.30, "max_sl": 1.00},
+        "FOREX_DEFAULT": {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00},
+    }
+
+    asset_limits = limits.get(asset_class, {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00})
+
+    # Hard cap: no asset class may exceed the GoatFunded drawdown limit
+    asset_limits["max_sl"] = min(asset_limits["max_sl"], GOATFUNDED_MAX_DRAWDOWN_PCT)
+    asset_limits["asset_class"] = asset_class
+    asset_limits["profile"] = profile
+
+    return asset_limits
+
+
 # ============================================================
 # PROMPT COMPRESSION HELPERS — Minimize token count for 8B models
 # ============================================================
@@ -567,929 +611,6 @@ async def fetch_liquidity_data_async() -> str:
     This calls the synchronous fetch_liquidity_data_sync() in a thread pool."""
     from core.data import fetch_liquidity_data_sync
     return await asyncio.to_thread(fetch_liquidity_data_sync)
-
-
-async def get_market_sentiment(nvidia_keys: list, sanity_alert: str = "", symbol: str = "GOLD", market_data_text: str = "") -> dict:
-    """AGENT 1: The Liquidation & Whale Hunter - Feeds real MT5 Macro Data to AI.
-    Native NVIDIA NIM integration. OPTIMIZED: ~150 tokens total."""
-    
-    if not market_data_text:
-        print("[CLAW] Fetching MT5 Macro Sensors...")
-        from core.macro_sensors import calculate_currency_matrix, detect_tick_velocity
-
-        matrix_data, velocity_data = await asyncio.gather(
-            calculate_currency_matrix(),
-            detect_tick_velocity(symbol)
-        )
-        matrix_text = f"Currency Matrix (0-100 Relative Strength): Strongest: {matrix_data['strongest']}, Weakest: {matrix_data['weakest']}"
-        velocity_text = f"Tick Velocity (1M scale): High Velocity: {velocity_data['is_high_velocity']}, Ratio: {velocity_data['ratio']}x"
-        context_text = f"{matrix_text}\n{velocity_text}"
-        liquidity_data_str = f"{matrix_text} | {velocity_text}"
-    else:
-        context_text = compress_candle_data(market_data_text, max_candles=3)
-        liquidity_data_str = "Backtest Mode - Synthetic Context Provided"
-
-    system_prompt = (
-        "You are an elite quantitative trading AI based on the Qwen architecture. "
-        "Analyze the provided market data concisely. "
-        "You may output a brief logical analysis, but you MUST conclude your response "
-        "with a single, strictly formatted JSON block containing your final decision. "
-        "Do not output any text after the JSON block. "
-        f"Forex/Metals macro sentiment analyzer for {symbol}. "
-        'Output format: {"sentiment":"BULLISH"|"BEARISH"|"NEUTRAL","confidence":0-100,'
-        '"squeeze_risk":"HIGH"|"MEDIUM"|"LOW","dominant_side":"LONG"|"SHORT"|"BALANCED","summary":"1 sentence"}'
-    )
-
-    user_prompt = f"{context_text}"
-
-    payload = {
-        "model": "meta/llama-3.1-70b-instruct",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 80,
-        "response_format": {"type": "json_object"}
-    }
-
-    _neutral_fallback = {
-        "sentiment": "NEUTRAL", "confidence": 50,
-        "squeeze_risk": "LOW", "dominant_side": "BALANCED",
-        "bullish_pct": 33, "bearish_pct": 33, "neutral_pct": 34,
-        "report": "Fundamental analysis offline.", "liquidity_data": liquidity_data_str
-    }
-
-    # Determine which API key to use for CLAW. Default to NVIDIA_API_KEY_3 for API separation.
-    claw_key = NVIDIA_API_KEY_3 if NVIDIA_API_KEY_3 else os.getenv("NVIDIA_API_KEY_FUNDAMENTAL") or os.getenv("NVIDIA_API_KEY")
-    
-    print(f"[CLAW] Routing Fundamental Analysis directly to NVIDIA NIM...")
-    response = await call_nvidia_nim_api(payload, claw_key)
-
-    if not response or response.status_code != 200:
-        print(f"[CLAW] NVIDIA API exhausted. Triggering agent-specific local fallback...")
-        response = await asyncio.to_thread(execute_local_fallback, payload)
-
-    if response and response.status_code == 200:
-        data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        parsed = robust_json_parse(content, _neutral_fallback)
-        sentiment = parsed.get("sentiment", "NEUTRAL").upper()
-        confidence = int(parsed.get("confidence", 50))
-        squeeze_risk = parsed.get("squeeze_risk", "MEDIUM").upper()
-        dominant_side = parsed.get("dominant_side", "BALANCED").upper()
-        report = parsed.get("summary", "No summary available")
-
-        if sentiment == "BULLISH":
-            bullish_pct, bearish_pct, neutral_pct = max(60, confidence), max(10, 100 - confidence - 20), 20
-        elif sentiment == "BEARISH":
-            bullish_pct, bearish_pct, neutral_pct = max(10, 100 - confidence - 20), max(60, confidence), 20
-        else:
-            bullish_pct, bearish_pct, neutral_pct = 33, 33, 34
-
-        print(f"[CLAW] Sentiment: {sentiment} ({confidence}%) | Squeeze: {squeeze_risk} | Side: {dominant_side}")
-        print(f"[CLAW] Report: {report}")
-
-        return {
-            "sentiment": sentiment,
-            "confidence": confidence,
-            "bullish_pct": bullish_pct,
-            "bearish_pct": bearish_pct,
-            "neutral_pct": neutral_pct,
-            "report": report,
-            "liquidity_data": liquidity_data_str,
-            "squeeze_risk": squeeze_risk,
-            "dominant_side": dominant_side
-        }
-
-    print(f"[CLAW] Fundamental analysis offline or failed.")
-    return _neutral_fallback
-
-def _get_max_leverage_setting() -> int:
-    """Read the user's max_leverage from persisted system parameters.
-    Returns 10 if the file is missing or unreadable."""
-    import os, json as _json
-    params_file = os.path.join(os.path.expanduser("~"), ".apex_trader", "apex_parameters.json")
-    try:
-        if os.path.exists(params_file):
-            with open(params_file, "r", encoding="utf-8") as f:
-                data = _json.load(f)
-            return min(20, max(1, int(data.get("max_leverage", 10))))
-    except Exception:
-        pass
-    return 10
-
-def execute_local_fallback(payload: dict) -> requests.Response:
-    """Route to local LM Studio with COMPRESSED prompt. Max 200 tokens output.
-    FIX #2: Increased max_tokens 80 → 150 → 400 → 1200 for distilled reasoning + JSON.
-    FIX #3: Clamps leverage in the response to the user's max_leverage setting.
-    FIX #4: Tuned for qwen3.5-9b-claude-4.6-opus-reasoning-distilled-v2.
-    FIX #5: 400→1200 — reasoning burns ~300+ tokens before JSON.
-    FIX #6: 1200→200 — switched to non-reasoning Qwen; only need JSON output, no CoT."""
-    print(f"[LOCAL-FALLBACK] NVIDIA API unavailable. Routing to LM Studio (RTX 4060 / Qwen-Standard)...")
-    try:
-        messages = payload.get("messages", [])
-        # Keep original system prompt (already optimized), compress user content
-        sys_content = messages[0].get("content", "") if messages else ""
-        user_content = messages[-1].get("content", "") if len(messages) > 1 else ""
-        # Compress if user content is bloated
-        if len(user_content) > 500:
-            user_content = compress_candle_data(user_content, max_candles=3)
-        fallback_payload = {
-            "model": "local-model",
-            "messages": [
-                {"role": "system", "content": sys_content[:800]},
-                {"role": "user", "content": user_content[:700]}
-            ],
-            "temperature": 0.1,
-            "max_tokens": 200,  # FIX #6: 1200→200 — non-reasoning model, JSON-only output
-            "stream": False
-        }
-        response = requests.post(LOCAL_LLM_URL, json=fallback_payload, timeout=120)
-
-        # ── FIX #3: LEVERAGE CLAMP for LM Studio responses ──
-        # Local models ignore the user's leverage cap. Hard-clamp here.
-        if response.status_code == 200:
-            try:
-                max_lev = _get_max_leverage_setting()
-                resp_json = response.json()
-                content_str = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if content_str:
-                    parsed = robust_json_parse(content_str, {})
-                    raw_lev = int(parsed.get("leverage", parsed.get("recommended_leverage", 0)))
-                    if raw_lev > max_lev and raw_lev > 0:
-                        print(f"[LOCAL-CLAMP] LM Studio leverage clamped: {raw_lev}x → {max_lev}x")
-                        parsed["leverage"] = max_lev
-                        parsed["recommended_leverage"] = max_lev
-                        # Re-pack the clamped JSON back into the response
-                        resp_json["choices"][0]["message"]["content"] = json.dumps(parsed)
-                        # Monkey-patch the response so callers see clamped values
-                        original_json = response.json
-                        response.json = lambda _rj=resp_json: _rj
-            except Exception as clamp_err:
-                print(f"[LOCAL-CLAMP] Clamp parse error (non-fatal): {clamp_err}")
-
-        return response
-    except Exception as e:
-        print(f"[LOCAL-FALLBACK] LM Studio fallback failed: {e}. Defaulting to HOLD.")
-        class FakeResponse:
-            status_code = 200
-            text = "Local fallback GPU timeout or crash"
-            def json(self):
-                return {
-                    "choices": [{
-                        "message": {
-                            "content": '{"direction": "HOLD", "confidence": 0, "reasoning": "Local fallback GPU timeout or crash. Defaulting to HOLD."}'
-                        }
-                    }]
-                }
-        return FakeResponse()
-
-def fetch_nvidia_sync(url: str, headers: dict, payload: dict, timeout: int = 25) -> requests.Response:
-    """Synchronous NVIDIA API call for use via asyncio.to_thread.
-    Used by the AI-TRAP predictive loop which constructs its own headers/payload
-    and needs a simple blocking HTTP POST without the async rate-limiter overhead.
-    """
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=timeout, verify=False)
-        return response
-    except requests.exceptions.Timeout:
-        print("[NVIDIA-SYNC] Request timed out")
-        class TimeoutResponse:
-            status_code = 408
-            text = "Request Timeout"
-            def json(self): return {}
-        return TimeoutResponse()
-    except Exception as e:
-        print(f"[NVIDIA-SYNC] Request failed: {e}")
-        class ErrorResponse:
-            status_code = 500
-            text = str(e)
-            def json(self): return {}
-        return ErrorResponse()
-
-
-async def call_nvidia_nim_api(payload: dict, api_key: str = None, max_retries: int = 3) -> requests.Response:
-    """Async NVIDIA API call with non-blocking rate limiting.
-    Implements retry with exponential backoff on 429 Rate Limit errors.
-    Circuit breaker prevents repeated calls when API is down.
-
-    FIX (ASYNC CONVERSION): Converted from synchronous def + time.sleep to
-    async def + asyncio.sleep. HTTP requests run via asyncio.to_thread to
-    keep the event loop unblocked. This eliminates the deadlock where 3
-    agents blocked each other through threading.Lock + time.sleep, causing
-    20+ second cascading delays and 429 storms.
-    """
-    url = "https://integrate.api.nvidia.com/v1/chat/completions"
-    target_key = api_key or os.getenv("NVIDIA_API_KEY")
-    headers = {
-        "Authorization": f"Bearer {target_key}",
-        "Content-Type": "application/json"
-    }
-    
-    state = get_key_state(target_key)
-
-    for attempt in range(max_retries):
-        current_time = time.time()
-
-        # ── GLOBAL PRE-FLIGHT RATE LIMITER (async) ──
-        if target_key:
-            await _wait_for_nvidia_rate_limit(target_key)
-        else:
-            # Fallback: enforce minimum delay if no key found
-            elapsed = current_time - state["last_call"]
-            if elapsed < NVIDIA_MIN_GAP:
-                await asyncio.sleep(NVIDIA_MIN_GAP - elapsed)
-            state["last_call"] = time.time()
-
-        try:
-            # Run blocking requests.post in thread pool to avoid blocking the event loop
-            response = await asyncio.to_thread(
-                requests.post, url, headers=headers, json=payload, timeout=25, verify=False
-            )
-        except requests.exceptions.Timeout:
-            print(f"[NVIDIA] Timeout. Bypassing retries...")
-            class TimeoutResponse:
-                status_code = 408
-                text = "Request Timeout"
-                def json(self): return {}
-            return TimeoutResponse()
-
-        # Handle 429 errors — INSTANT FALLBACK, no retries, no backoff
-        # The caller already routes to LM Studio on non-200; retries just add 5-45s of dead latency.
-        if response.status_code == 429:
-            state["error_count"] += 1
-            print(f"[NVIDIA] 429 Rate Limit hit. Bypassing retries for instant fallback. (Error count: {state['error_count']})")
-            return response
-
-        # SUCCESS: Reset backoff state
-        if response.status_code == 200:
-            if state["error_count"] > 0:
-                print(f"[NVIDIA] Success after {state['error_count']} previous 429 errors — backoff cleared")
-                state["error_count"] = 0
-            return response
-
-        return response
-
-    class ExhaustedResponse:
-        status_code = 500
-        text = "All retries exhausted"
-        def json(self): return {}
-    return ExhaustedResponse()
-
-def get_optimized_parameters(symbol: str):
-    # OBSOLETE: Replaced by Dynamic ATR Volatility Engine
-    return None, None
-
-async def analyze_macro_trend(nvidia_key: str, sentiment_report: str, candle_1h: str, candle_4h: str, trading_memory: str = "", sanity_alert: str = "", symbol: str = "GOLD", trend_bias_text: str = "NEUTRAL (+0)") -> dict:
-    """AGENT 2: The Macro Trend Follower (NVIDIA NIM). OPTIMIZED: ~200 tokens total."""
-    if not nvidia_key:
-        return {"decision": "HOLD", "confidence": 0, "reasoning": "No NVIDIA API key"}
-
-    # Compress candle data from ~500+ tokens per TF to ~60
-    compact_1h = compress_candle_data(candle_1h, max_candles=3)
-    compact_4h = compress_candle_data(candle_4h, max_candles=3)
-
-    system_prompt = (
-        "You are an elite quantitative trading AI based on the Qwen architecture. "
-        "Analyze the provided market data concisely. "
-        "You may output a brief logical analysis, but you MUST conclude your response "
-        "with a single, strictly formatted JSON block containing your final decision. "
-        "Do not output any text after the JSON block. "
-        f"Forex/Metals macro trend follower for {symbol}. Trend bias: {trend_bias_text}. "
-        "Follow the trend. BUY if bullish, SELL if bearish, HOLD if unclear. Never counter-trend. "
-        'Output format: {"decision":"BUY"|"SELL"|"HOLD","confidence":0-100,'
-        '"volatility":"low"|"medium"|"high","recommended_leverage":1-20,"reasoning":"brief"}'
-    )
-
-    user_prompt = f"1H:{compact_1h}\n4H:{compact_4h}"
-
-    payload = {
-        "model": "meta/llama-3.1-70b-instruct",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 80,
-        "response_format": {"type": "json_object"}
-    }
-
-    _hold = {"decision": "HOLD", "confidence": 0, "reasoning": ""}
-
-    macro_key = os.getenv("NVIDIA_API_KEY_MACRO") or os.getenv("NVIDIA_API_KEY")
-    
-    print(f"[MACRO] Routing Macro Trend Analysis directly to NVIDIA NIM...")
-    response = await call_nvidia_nim_api(payload, macro_key)
-
-    if not response or response.status_code != 200:
-        print(f"[MACRO] NVIDIA API exhausted. Triggering agent-specific local fallback...")
-        response = await asyncio.to_thread(execute_local_fallback, payload)
-
-    if response and response.status_code == 200:
-        data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        result = robust_json_parse(content, _hold)
-        decision = result.get("decision", "HOLD").upper()
-        volatility = result.get("volatility", "medium")
-        confidence = safe_int(result.get("confidence", 0), 0, 0, 100)
-        rec_leverage = safe_int(result.get("recommended_leverage", 10), 10, 1, 20)
-        print(f"[MACRO TREND] {decision} ({confidence}%) | Vol: {volatility} | Lev: {rec_leverage}x")
-        return {
-            "decision": decision,
-            "confidence": confidence,
-            "volatility": volatility,
-            "recommended_leverage": rec_leverage,
-            "reasoning": result.get("reasoning", "")
-        }
-
-    return {**_hold, "reasoning": "All retries exhausted"}
-
-async def find_sniper_entry(nvidia_key: str, candle_5m: str, live_price: float = 0, trading_memory: str = "", sanity_alert: str = "", symbol: str = "GOLD", trend_bias_text: str = "NEUTRAL (+0)", h1_bias: str = "") -> dict:
-    """AGENT 3: The Scalper (NVIDIA NIM). OPTIMIZED: ~180 tokens total. HTF bias injected."""
-    if not nvidia_key:
-        return {"decision": "HOLD", "confidence": 0, "reasoning": "No NVIDIA API key"}
-
-    risk_profile = get_symbol_risk_profile(symbol)
-    _hold = {"decision": "HOLD", "confidence": 0, "entry_price": "", "reasoning": "", "stop_loss_pct": risk_profile["sl"], "take_profit_pct": risk_profile["tp"], "leverage": 10}
-
-    if live_price > 0:
-        current_price = live_price
-        print(f"[SCALPER] {symbol} price provided: ${current_price:,.2f}")
-    else:
-        current_price = 0
-
-    if current_price <= 0:
-        print("[SCALPER] ERROR: current_price is 0! NVIDIA cannot calculate entry with $0 price.")
-        return {**_hold, "reasoning": f"Live {symbol} price unavailable"}
-
-    compact_data = compress_candle_data(candle_5m, max_candles=5)
-
-    # Inject HTF bias so the model knows the H1 direction
-    htf_line = f" HTF H1 bias: {h1_bias}. Only output signals matching HTF direction." if h1_bias and h1_bias != "SKIP" else ""
-    system_prompt = (
-        "You are an elite Institutional SMC (Smart Money Concepts) Sniper. "
-        "Analyze the provided market data concisely. "
-        "You MUST conclude your response with a single, strictly formatted JSON block. Do not output text after the JSON. "
-        f"Trading {symbol} at {current_price:,.2f}. Trend: {trend_bias_text}.{htf_line} "
-        "Do NOT chase overextended trends or massive green/red candles. "
-        "You MUST wait for price to retrace into a valid Order Block (OB) or Fair Value Gap (FVG). "
-        "If BULLISH, only BUY if the price is resting inside or very near a Bullish OB/FVG (Discount). "
-        "If BEARISH, only SELL if the price is resting inside or very near a Bearish OB/FVG (Premium). "
-        "If the price is in 'no-man's land' far from these levels, output HOLD. "
-        f"Use {risk_profile['class']} scalp geometry: stop_loss_pct <= {risk_profile['sl']:.3f}, take_profit_pct <= {risk_profile['tp']:.3f}. "
-        'Output format: {"decision":"BUY"|"SELL"|"HOLD","confidence":0-100,"entry_price":number,'
-        '"stop_loss_pct":number,"take_profit_pct":number,"leverage":1-20,"reasoning":"brief"}'
-    )
-
-    user_prompt = f"{compact_data}"
-
-    payload = {
-        "model": "meta/llama-3.1-70b-instruct",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1,
-        "max_tokens": 80,
-        "response_format": {"type": "json_object"}
-    }
-
-    scalper_key = os.getenv("NVIDIA_API_KEY_SCALPER") or os.getenv("NVIDIA_API_KEY")
-    
-    print(f"[SCALPER] Executing short-term logic via NVIDIA NIM...")
-    response = await call_nvidia_nim_api(payload, scalper_key)
-
-    if not response or response.status_code != 200:
-        print(f"[SCALPER] NVIDIA API exhausted. Triggering agent-specific local fallback...")
-        response = await asyncio.to_thread(execute_local_fallback, payload)
-
-    if response and response.status_code == 200:
-        data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-        result = robust_json_parse(content, _hold)
-        decision = result.get("decision", "HOLD").upper()
-        sl_pct, tp_pct, profile = clamp_risk_to_symbol(symbol, result.get("stop_loss_pct", risk_profile["sl"]), result.get("take_profit_pct", risk_profile["tp"]))
-        ai_leverage = safe_int(result.get("leverage", 10), 10, 1, 20)
-        raw_entry = result.get("entry_price", "")
-        try:
-            parsed_entry = float(raw_entry)
-        except (TypeError, ValueError):
-            parsed_entry = 0.0
-        entry_price = round(parsed_entry, 5) if parsed_entry > 0 else round(current_price, 5)
-        confidence = safe_int(result.get("confidence", 0), 0, 0, 100)
-        print(f"[SCALPER] {decision} @ {entry_price} ({confidence}%) | {profile['class']} SL: {sl_pct}% | TP: {tp_pct}% | Lev: {ai_leverage}x")
-        return {
-            "decision": decision,
-            "confidence": confidence,
-            "entry_price": entry_price,
-            "stop_loss_pct": sl_pct,
-            "take_profit_pct": tp_pct,
-            "leverage": ai_leverage,
-            "reasoning": result.get("reasoning", "")
-        }
-
-    return {**_hold, "reasoning": "All retries exhausted"}
-
-
-def is_aplus_setup(market_data_text: str, trend_bias: dict, live_price: float, symbol: str, timestamp_str: str = "", smc_proximity_pct: float = 0.0015, ofi: float = 0.0, vpin: float = 0.0, vpin_side: str = "BALANCED") -> tuple[bool, str]:
-    """
-    Mathematical Gatekeeper: Only allows A+ Setups to pass to the LLM.
-    1. Killzone Filter: Must be within London or NY session.
-    2. Trend Alignment: 1H and 4H scores must both be >= 30 (LONG) or <= -30 (SHORT).
-    3. R:R Ratio: Dynamic TP must be >= 1.5x Dynamic SL.
-    4. SMC Proximity: Live price must be within 0.15% of an Institutional OB/FVG.
-    """
-    from core.macro_sensors import get_smc_killzone
-    
-    # 0. Killzone Check (strict New York time)
-    kz_active, kz_name = get_smc_killzone()
-    if not kz_active:
-        return False, f"Price action outside Institutional Killzones ({kz_name})."
-
-    if live_price <= 0:
-        return True, ""  # Skip if live price is unavailable (fallback)
-
-    # 1. Parse Dynamic Risk/Reward
-    import re
-    dyn_sl_match = re.search(r"Dynamic SL distance is ([\d\.]+)%", market_data_text)
-    dyn_tp_match = re.search(r"Dynamic TP distance is ([\d\.]+)%", market_data_text)
-    
-    if dyn_sl_match and dyn_tp_match:
-        dyn_sl = float(dyn_sl_match.group(1))
-        dyn_tp = float(dyn_tp_match.group(1))
-        rr = dyn_tp / dyn_sl if dyn_sl > 0 else 0
-        if rr < 1.5:
-            return False, f"Insufficient Dynamic R:R ({rr:.2f} < 1.5)"
-
-    # 2. Trend Alignment (1H Structure Gatekeeper)
-    per_tf = trend_bias.get("per_tf", {})
-    score_1h = per_tf.get("1h", 0)
-    score_4h = per_tf.get("4h", 0)
-
-    # Determine structural direction. Strict macro alignment is preferred, but the
-    # green-circle entry happens before 4H fully catches up, so a proven M15 pullback
-    # continuation can wake the agents early when H1 is not fighting the trade.
-    weighted = trend_bias.get("score", 0)
-    early_entry = {"pass": False, "reason": "Not checked"}
-    
-    if weighted >= 15 and score_1h >= 10:
-        target_dir = "LONG"
-    elif weighted <= -15 and score_1h <= -10:
-        target_dir = "SHORT"
-    else:
-        try:
-            from core.macro_sensors import get_early_trend_continuation
-            if weighted >= 12 and score_1h >= 0:
-                early_entry = get_early_trend_continuation(symbol, "BUY")
-                if early_entry.get("pass"):
-                    print(f"[A+ EARLY WAKE] BUY pullback continuation accepted before full 4H confirmation: {early_entry.get('reason')}")
-                    return True, ""
-            elif weighted <= -12 and score_1h <= 0:
-                early_entry = get_early_trend_continuation(symbol, "SELL")
-                if early_entry.get("pass"):
-                    print(f"[A+ EARLY WAKE] SELL pullback continuation accepted before full 4H confirmation: {early_entry.get('reason')}")
-                    return True, ""
-        except Exception as early_err:
-            early_entry = {"pass": False, "reason": str(early_err)}
-        return False, f"1H Market Structure Mismatch or Weak Macro Trend (Weighted: {weighted:+.0f}, 1H: {score_1h:+d}, 4H: {score_4h:+d}) | Early: {early_entry.get('reason')}"
-
-    # 2b. Order Flow Imbalance (OFI) Hard Gate — reject toxic liquidity traps
-    if target_dir == "LONG" and ofi < -500:
-        return False, f"Toxic Order Flow Imbalance Detected (OFI: {ofi:+.0f} < -500 while targeting LONG)"
-    if target_dir == "SHORT" and ofi > 500:
-        return False, f"Toxic Order Flow Imbalance Detected (OFI: {ofi:+.0f} > +500 while targeting SHORT)"
-
-    # 2c. VPIN Hard Gate — reject when informed traders are aggressively absorbing liquidity
-    if vpin >= 0.70:
-        return False, f"VPIN Toxic Flow Detected (VPIN: {vpin:.3f} >= 0.70 threshold). Informed institutional absorption in progress."
-    # Directional mismatch: elevated VPIN with dominant side opposing the trade
-    if vpin >= 0.50:
-        if target_dir == "LONG" and vpin_side == "SELL":
-            return False, f"VPIN Directional Conflict (VPIN: {vpin:.3f}, Dominant: SELL while targeting LONG)"
-        if target_dir == "SHORT" and vpin_side == "BUY":
-            return False, f"VPIN Directional Conflict (VPIN: {vpin:.3f}, Dominant: BUY while targeting SHORT)"
-
-    # 3. SMC Proximity Check
-    bullish_levels = []
-    bearish_levels = []
-    
-    bullish_fvg = re.search(r"Nearest Bullish FVG.*(?:mid|to) ([\d\.]+)", market_data_text)
-    if bullish_fvg: bullish_levels.append(float(bullish_fvg.group(1).replace(',', '')))
-        
-    bearish_fvg = re.search(r"Nearest Bearish FVG.*(?:mid|to) ([\d\.]+)", market_data_text)
-    if bearish_fvg: bearish_levels.append(float(bearish_fvg.group(1).replace(',', '')))
-        
-    bullish_ob = re.search(r"Nearest Bullish OB.*to ([\d\.]+)", market_data_text)
-    if bullish_ob: bullish_levels.append(float(bullish_ob.group(1).replace(',', '')))
-        
-    bearish_ob = re.search(r"Nearest Bearish OB.*to ([\d\.]+)", market_data_text)
-    if bearish_ob: bearish_levels.append(float(bearish_ob.group(1).replace(',', '')))
-
-    # Check distance to the appropriate levels
-    target_levels = bullish_levels if target_dir == "LONG" else bearish_levels
-    if not target_levels:
-        try:
-            from core.macro_sensors import get_early_trend_continuation
-            early_entry = get_early_trend_continuation(symbol, "BUY" if target_dir == "LONG" else "SELL")
-            if early_entry.get("pass"):
-                print(f"[A+ EARLY WAKE] No SMC level, but pullback continuation is clean: {early_entry.get('reason')}")
-                return True, ""
-        except Exception:
-            pass
-        return False, "No Institutional SMC levels (OB/FVG) detected to support entry. Blocking FOMO."
-        
-    closest_dist_pct = min(abs(live_price - lvl) / live_price for lvl in target_levels)
-    
-    # Instrument-aware strike zone: Metals need wider tolerance due to high candle volatility
-    _sym_upper = symbol.upper()
-    is_metal = any(m in _sym_upper for m in ("GOLD", "XAU", "SILVER", "XAG", "US30", "DJ30"))
-    proximity_buffer = 0.0080 if is_metal else 0.0040
-    
-    if closest_dist_pct > proximity_buffer:
-        side_str = "Demand/Support" if target_dir == "LONG" else "Supply/Resistance"
-        try:
-            from core.macro_sensors import get_early_trend_continuation
-            early_entry = get_early_trend_continuation(symbol, "BUY" if target_dir == "LONG" else "SELL")
-            if early_entry.get("pass"):
-                print(f"[A+ EARLY WAKE] SMC level is {closest_dist_pct*100:.2f}% away, but pullback continuation is clean: {early_entry.get('reason')}")
-                return True, ""
-        except Exception:
-            pass
-        return False, f"Price not in Institutional Strike Zone (Nearest {side_str} is {closest_dist_pct*100:.2f}% away, limit {proximity_buffer*100:.2f}%)"
-
-    return True, ""
-
-    return {"decision": "HOLD", "confidence": 0, "entry_price": "", "reasoning": "All retries exhausted"}
-async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0) -> dict:
-    """THE CONSENSUS LOGIC - Main async entry point"""
-    global WAKE_CYCLES_REMAINING
-    print("=" * 60)
-    print("APEX 3-AGENT CONSENSUS PIPELINE")
-    print("=" * 60)
-
-    import time
-    symbol = active_symbol or "GOLD"
-    if symbol in GLOBAL_COOLDOWNS:
-        time_left = GLOBAL_COOLDOWNS[symbol] - time.time()
-        if time_left > 0:
-            print(f"[GATING] {symbol} is in POST-TRADE COOLDOWN for {int(time_left/60)} more minutes. Forcing HOLD.")
-            return {"decision": "HOLD", "status": "COOLDOWN", "consensus_strength": 0}
-        else:
-            del GLOBAL_COOLDOWNS[symbol] # Cooldown expired
-
-
-    # ── VOLATILITY GATE: Skip LLM calls if market is sideways ──
-    if not force_run:
-        gate = await check_market_volatility(symbol)
-        if not gate["pass"]:
-            print("=" * 60)
-            print("FINAL DECISION: HOLD (Volatility Gate)")
-            print("=" * 60)
-            return gate["result"]
-    else:
-        print("[SYSTEM] MANUAL OVERRIDE ENGAGED: Bypassing Volatility Gate. Forcing all NVIDIA AI Agents to wake up...")
-
-    # ── TREND BIAS PRE-SCORE ──
-    trend_bias = compute_trend_bias(market_data_text)
-    trend_score = trend_bias["score"]
-    trend_label = trend_bias["label"]
-    trend_bias_text = format_trend_bias(trend_bias)
-
-    # ── AI CONSENSUS CACHE ──
-    # If we evaluated this exact market state recently, return cached result
-    # to avoid burning NVIDIA API rate limits on unchanged conditions.
-    _cache_key = _make_ai_cache_key(symbol, market_data_text, float(live_asset_price or 0.0), force_run)
-    _now = time.time()
-    if _cache_key in _ai_consensus_cache:
-        _cached = _ai_consensus_cache[_cache_key]
-        if _cached["expires"] > _now:
-            age = int(_now - _cached["created"])
-            print(f"[AI-CACHE] HIT for {symbol} (age: {age}s). Returning cached consensus. Skipping {3} NVIDIA calls.")
-            return _cached["result"]
-
-    # ── A+ SETUP GATEKEEPER ──
-    # Reject mediocre setups mathematically before firing any AI APIs
-    if not force_run:
-        # Parse OFI from market data text if available
-        _ofi_value = 0.0
-        import re as _re_ofi
-        _ofi_match = _re_ofi.search(r'OFI:\s*([+-]?[\d.]+)', market_data_text)
-        if _ofi_match:
-            try:
-                _ofi_value = float(_ofi_match.group(1))
-            except (ValueError, TypeError):
-                _ofi_value = 0.0
-
-        # Parse VPIN from market data text if available
-        _vpin_value = 0.0
-        _vpin_side = "BALANCED"
-        _vpin_match = _re_ofi.search(r'VPIN:\s*([\d.]+)', market_data_text)
-        if _vpin_match:
-            try:
-                _vpin_value = float(_vpin_match.group(1))
-            except (ValueError, TypeError):
-                _vpin_value = 0.0
-        _vpin_side_match = _re_ofi.search(r'Dominant:\s*(BUY|SELL|BALANCED)', market_data_text)
-        if _vpin_side_match:
-            _vpin_side = _vpin_side_match.group(1)
-
-        aplus_pass, reject_reason = is_aplus_setup(market_data_text, trend_bias, float(live_asset_price or 0.0), symbol, ofi=_ofi_value, vpin=_vpin_value, vpin_side=_vpin_side)
-        if not aplus_pass:
-            print("=" * 60)
-            print(f"[GATEKEEPER] Rejected: {reject_reason}")
-            print(f"FINAL DECISION: HOLD")
-            print("=" * 60)
-            return {
-                "action": "HOLD",
-                "asset": symbol,
-                "confidence": 0,
-                "reasoning": f"Rejected by A+ Filter: {reject_reason}",
-                "status": "GATED",
-                "_debug": {"trend_bias": trend_bias}
-            }
-
-    if active_positions is None:
-        active_positions = []
-    is_sanity_check = False
-    sanity_alert = ""
-
-    # Continuous fleet stacking: active positions do not hibernate the AI swarm.
-    if active_positions:
-        print(f"[STACK MODE] {len(active_positions)} active position(s) detected. AI Agents remain ACTIVE for continuous stacking.")
-        if WAKE_CYCLES_REMAINING > 0:
-            WAKE_CYCLES_REMAINING -= 1
-            is_sanity_check = True
-            print(f"[SANITY CHECK] Manual override context added. Cycles left: {WAKE_CYCLES_REMAINING}")
-
-            pos = active_positions[0]
-            size = float(pos.get("size", 0) or pos.get("qty", 0))
-            side = "LONG" if size > 0 else "SHORT"
-            entry = pos.get("entry_price", 0)
-            sanity_alert = f"\n[SYSTEM ALERT: SANITY CHECK MODE. The user currently has an OPEN {side} position from {entry}. The user has manually woken you up to get a fresh read on the market. Evaluate the price action. Does the market still support holding this {side}, or are there signs of a reversal? Output your standard JSON analysis.]\n\n"
-    else:
-        print("[HUNT MODE] No active positions. Agents ACTIVE with fresh data.")
-
-    trading_memory = load_memory()
-    # Inject recent failure patterns so agents learn from losses
-    from core.memory import get_recent_failure_summary
-    failure_summary = get_recent_failure_summary(n=5)
-    if failure_summary:
-        trading_memory += f"\n\n[RECENT LOSS PATTERNS] {failure_summary}"
-    print(f"[MEMORY] Loaded {len(trading_memory)} chars from APEX_MEMORY.md{' + failure patterns' if failure_summary else ''}")
-
-    symbol_live_price = float(live_asset_price or 0.0)
-    if symbol_live_price > 0:
-        print(f"[SCALPER] {symbol} price provided: ${symbol_live_price:,.2f}")
-    else:
-        print(f"[SCALPER] Live {symbol} price unavailable from server state.")
-
-    # PARALLEL EXECUTION: 3-Way Stagger to prevent 429 bursts
-    # Increased to 3s gaps + global rate limiter in call_nvidia_nim_api keeps us under 30 RPM
-    print(f"[PARALLEL] Running CLAW, Macro, and Scalper with 3s 3-way stagger...")
-
-    # 1. Fire CLAW immediately (using NVIDIA_API_KEY_3 / Fundamental Key)
-    claw_key = NVIDIA_API_KEY_3 if NVIDIA_API_KEY_3 else NVIDIA_API_KEY
-    print("[STEP 1/3] Running CLAW Fundamental Analysis (NVIDIA NIM)...")
-    claw_task = asyncio.create_task(get_market_sentiment([claw_key], sanity_alert, symbol=symbol))
-
-    await asyncio.sleep(3.0)
-
-    # 2. Fire Macro (using NVIDIA_API_KEY_2 / Trend Key)
-    macro_key = NVIDIA_API_KEY_2 if NVIDIA_API_KEY_2 else NVIDIA_API_KEY
-    print("[STEP 2/3] Running Macro Trend Analysis (NVIDIA NIM)...")
-    macro_task = asyncio.create_task(analyze_macro_trend(macro_key, "Sentiment: Processing parallel...", market_data_text, market_data_text, trading_memory, sanity_alert, symbol=symbol, trend_bias_text=trend_bias_text))
-
-    await asyncio.sleep(3.0)
-
-    # 3. Fire Scalper (using NVIDIA_API_KEY / Scalper Key) — with HTF bias injection
-    scalper_key = NVIDIA_API_KEY
-    print("[STEP 3/3] Running Scalper Analysis (NVIDIA NIM)...")
-    # FIX #6: Fetch H1 bias and inject into scalper prompt
-    try:
-        from core.macro_sensors import get_h1_trend_bias
-        h1_data = get_h1_trend_bias(symbol)
-        h1_bias = h1_data.get("bias", "")
-    except Exception as h1_err:
-        print(f"[HTF-GATE] H1 bias fetch failed (non-blocking): {h1_err}")
-        h1_bias = ""
-    scalper_task = asyncio.create_task(find_sniper_entry(scalper_key, market_data_text, symbol_live_price, trading_memory, sanity_alert, symbol=symbol, trend_bias_text=trend_bias_text, h1_bias=h1_bias))
-    
-    # Await all results
-    sentiment_result = await claw_task
-    sentiment_report = f"Sentiment: {sentiment_result.get('sentiment', 'NEUTRAL')} ({sentiment_result.get('confidence', 0)}%) - {sentiment_result.get('report', '')}"
-    macro_result = await macro_task
-    scalper_result = await scalper_task
-
-    # (Trend bias was already calculated above)
-
-    print("[CONSENSUS] Computing final 3-Agent decision...")
-    macro_decision = str(macro_result.get("decision", "HOLD")).upper()
-    scalper_decision = str(scalper_result.get("decision", "HOLD")).upper()
-    claw_vote = sentiment_result.get("sentiment", "NEUTRAL").upper()
-
-    direction_map = {
-        "BUY": 1,
-        "LONG": 1,
-        "BULLISH": 1,
-        "SELL": -1,
-        "SHORT": -1,
-        "BEARISH": -1,
-        "HOLD": 0,
-        "NEUTRAL": 0,
-    }
-
-    def normalize_confidence(value):
-        # Handle word-based confidence from local LLM fallback (e.g. "High", "Medium", "Low")
-        if isinstance(value, str):
-            word_map = {"high": 85, "very high": 95, "medium": 60, "moderate": 60,
-                        "low": 30, "very low": 15, "none": 0}
-            mapped = word_map.get(value.strip().lower())
-            if mapped is not None:
-                value = mapped
-            else:
-                try:
-                    value = float(value)
-                except (ValueError, TypeError):
-                    value = 50  # Safe mid-range default for unparseable strings
-        confidence_value = float(value or 0)
-        if confidence_value > 1:
-            return confidence_value / 100
-        return confidence_value
-
-    # ── PURE DIRECTIONAL AVERAGING (HoldGravity ELIMINATED) ──
-    # HOLD/NEUTRAL votes are passive abstentions — they do NOT penalize the score.
-    # Only active directional voters (BUY/SELL/LONG/SHORT/BULLISH/BEARISH) are averaged.
-    # This prevents a single 80% MACRO BUY from being dragged to 20% by two abstaining agents.
-    agent_configs = [
-        ("Macro",   macro_decision,   normalize_confidence(macro_result.get("confidence", 0)),     0.40),
-        ("CLAW",    claw_vote,        normalize_confidence(sentiment_result.get("confidence", 0)), 0.35),
-        ("Scalper", scalper_decision,  normalize_confidence(scalper_result.get("confidence", 0)),   0.25),
-    ]
-
-    active_votes = []       # (agent_name, signed_score, weight)
-    abstentions = []        # agents that voted HOLD/NEUTRAL
-    weighted_votes = {}     # For logging compatibility
-
-    for agent_name, decision, conf, weight in agent_configs:
-        direction_int = direction_map.get(decision, 0)
-        if direction_int != 0:
-            # Active directional vote — include in average
-            signed_score = direction_int * conf * weight
-            active_votes.append((agent_name, signed_score, weight))
-            weighted_votes[agent_name] = signed_score
-        else:
-            # HOLD/NEUTRAL = abstention — excluded from scoring entirely
-            abstentions.append(agent_name)
-            weighted_votes[agent_name] = 0.0
-
-    if active_votes:
-        # Normalize: divide by the sum of ACTIVE weights only (not total 1.0)
-        total_active_weight = sum(w for _, _, w in active_votes)
-        raw_directional = sum(s for _, s, _ in active_votes)
-        # Re-scale so that a single 80% BUY agent with 0.40 weight still produces 0.80 * 0.40/0.40 = 0.80
-        final_score = raw_directional / total_active_weight if total_active_weight > 0 else 0.0
-    else:
-        # All agents abstained — pure HOLD
-        final_score = 0.0
-        raw_directional = 0.0
-        total_active_weight = 0.0
-
-    confidence = min(100, int(abs(final_score) * 100))
-
-    if final_score >= 0.30:
-        final_action = "LONG"
-    elif final_score <= -0.30:
-        final_action = "SHORT"
-    else:
-        final_action = "HOLD"
-        if macro_decision != "HOLD" or scalper_decision != "HOLD" or claw_vote in ("BULLISH", "BEARISH"):
-            reasoning = f"Directional consensus score {final_score:+.4f} below execution threshold. Trade BLOCKED."
-
-    abstention_str = f" | Abstentions: {', '.join(abstentions)}" if abstentions else ""
-    print(
-        f"[CONSENSUS] Score={final_score:+.4f} "
-        f"(Active voters: {len(active_votes)}/3, Active weight: {total_active_weight:.2f}; "
-        f"Macro={weighted_votes.get('Macro', 0):+.4f}, CLAW={weighted_votes.get('CLAW', 0):+.4f}, Scalper={weighted_votes.get('Scalper', 0):+.4f}"
-        f"{abstention_str}) "
-        f"=> {final_action}"
-    )
-
-    # Trend veto: direction must agree with the mathematical trend sign.
-    if final_action == "SHORT" and trend_score > 0:
-        print(f"[TREND VETO] BLOCKED SHORT — Trend is BULLISH ({trend_label}, score: {trend_score:+d}). Agents voted SHORT but 4H/1H trends disagree. Forcing HOLD.")
-        final_action = "HOLD"
-    elif final_action == "LONG" and trend_score < 0:
-        print(f"[TREND VETO] BLOCKED LONG — Trend is BEARISH ({trend_label}, score: {trend_score:+d}). Agents voted LONG but 4H/1H trends disagree. Forcing HOLD.")
-        final_action = "HOLD"
-    elif final_action in ("LONG", "SHORT"):
-        print(f"[TREND CHECK] Trade direction {final_action} ALIGNS with trend ({trend_label}, {trend_score:+d}). Approved.")
-
-    exhaustion_check = detect_trend_exhaustion(market_data_text, final_action)
-    if final_action in ("LONG", "SHORT") and exhaustion_check.get("veto"):
-        print(f"[VETO] Trend Exhaustion detected. Ignoring late entry. {exhaustion_check['reason']}")
-        final_action = "HOLD"
-
-    entry_quality = validate_trend_start_entry(market_data_text, final_action, macro_result, scalper_result, trend_bias, symbol_live_price, symbol)
-    if final_action in ("LONG", "SHORT") and not entry_quality.get("pass"):
-        print(f"[ENTRY VETO] {entry_quality.get('reason', 'Entry quality failed')}. Trade BLOCKED before execution.")
-        final_action = "HOLD"
-    elif final_action in ("LONG", "SHORT"):
-        print(f"[ENTRY CHECK] {entry_quality.get('reason', 'Trend-start confirmed')}. Approved for execution.")
-
-    # AI-determined risk parameters from the Scalper agent
-    ai_sl, ai_tp, risk_profile = clamp_risk_to_symbol(symbol, scalper_result.get("stop_loss_pct", 1.5), scalper_result.get("take_profit_pct", 4.0))
-    ai_leverage = safe_int(scalper_result.get("leverage", 10), 10, 1, 20)
-    macro_leverage = safe_int(macro_result.get("recommended_leverage", 10), 10, 1, 20)
-    volatility = macro_result.get("volatility", "medium")
-
-    # Blend leverage: weight toward the more confident agent, cap at 20x
-    macro_conf = safe_int(macro_result.get("confidence", 50), 50, 0, 100)
-    scalper_conf = safe_int(scalper_result.get("confidence", 50), 50, 0, 100)
-    total_conf = macro_conf + scalper_conf
-    if total_conf > 0:
-        # Confidence-weighted average
-        final_leverage = int((ai_leverage * scalper_conf + macro_leverage * macro_conf) / total_conf)
-    else:
-        final_leverage = 10
-    final_leverage = min(20, max(1, final_leverage))
-
-    avg_confidence = (macro_conf + scalper_conf) / 2
-    print(f"[RISK CONTROL] AI Confidence: {avg_confidence:.0f}% (Macro: {macro_conf}% / Scalper: {scalper_conf}%). AI dynamically selected {final_leverage}x Leverage.")
-
-    # Volatility adjustment: widen SL/TP in high vol, tighten in low vol
-    if volatility == "high":
-        ai_sl = ai_sl * 1.1
-        ai_tp = ai_tp * 1.1
-    elif volatility == "low":
-        ai_sl = ai_sl * 0.9
-        ai_tp = ai_tp * 0.9
-    ai_sl, ai_tp, risk_profile = clamp_risk_to_symbol(symbol, ai_sl, ai_tp)
-
-    # ============================================================
-    # RISK/REWARD GATE — Hard VETO (optimized for M15 scalping)
-    # ============================================================
-    # Lowered thresholds to allow more frequent high-probability scalps
-    # while still blocking structurally bad setups.
-    MIN_RR_RATIO = 1.5  # Standard M15 scalping minimum: 1.5x reward per 1x risk
-    MIN_TP_PCT = risk_profile["min_tp"]
-
-    if final_action in ("LONG", "SHORT"):
-        rr_ratio = round(ai_tp / ai_sl, 2) if ai_sl > 0 else 0.0
-
-        # GATE 1: Anti-Fee Scalp Protection
-        if ai_tp < MIN_TP_PCT:
-            print(f"[VETO] Anti-Fee Scalp Protection: TP={ai_tp:.3f}% is below {MIN_TP_PCT:.3f}% minimum. Trade cannot clear fees/spread. Blocking.")
-            final_action = "HOLD"
-
-        # GATE 2: Minimum Risk/Reward Ratio
-        elif rr_ratio < MIN_RR_RATIO:
-            print(f"[VETO] Insufficient Risk/Reward Ratio ({rr_ratio:.2f}). Minimum required is {MIN_RR_RATIO}. TP={ai_tp:.3f}% vs SL={ai_sl:.3f}%. Trade rejected.")
-            final_action = "HOLD"
-
-        else:
-            print(f"[RISK GATE] R:R Ratio {rr_ratio:.2f} (>= {MIN_RR_RATIO}) | TP={ai_tp:.3f}% | SL={ai_sl:.3f}% | APPROVED")
-
-    print(f"[RISK] {risk_profile['class']} Params: SL={ai_sl:.3f}% | TP={ai_tp:.3f}% | Leverage={final_leverage}x | Volatility={volatility}")
-
-    # Ensure all result variables are defined with safe defaults
-    if 'reasoning' not in locals():
-        reasoning = f"Consensus: {final_action} | Trend: {trend_label} ({trend_score:+d})"
-    if 'confidence' not in locals():
-        confidence = avg_confidence
-    if 'rr_ratio' not in locals():
-        rr_ratio = 0.0
-    debug_info = {
-        "sentiment": sentiment_result,
-        "macro": macro_result,
-        "scalper": scalper_result,
-        "trend_bias": trend_bias
-    }
-
-    result = {
-        "action": final_action,
-        "is_sanity_check": is_sanity_check,
-        "asset": symbol,
-        "stop_loss_pct": ai_sl,
-        "take_profit_pct": ai_tp,
-        "leverage": final_leverage,
-        "volatility": volatility,
-        "reasoning": reasoning,
-        "confidence": confidence,
-        "rr_ratio": rr_ratio,
-        "_debug": debug_info
-    }
-
-    # ── AI CONSENSUS CACHE STORE ──
-    # Cache this result so we don't burn NVIDIA API calls on unchanged market data
-    _ai_consensus_cache[_cache_key] = {
-        "result": result,
-        "expires": time.time() + AI_CACHE_TTL,
-        "created": time.time()
-    }
-    print(f"[AI-CACHE] Stored consensus for {symbol} (TTL: {AI_CACHE_TTL}s)")
-
-    return result
 
 
 async def evaluate_options_spread(options_chain: dict, market_trend: str, acct_balance: float, spot_price: float = 0.0) -> dict:
@@ -1733,3 +854,519 @@ async def run_trade_autopsy(trade_data: dict, market_context: dict) -> dict:
             "error": str(e),
             "trade_symbol": trade_data.get("symbol", "UNKNOWN")
         }
+
+import aiohttp
+import json
+import asyncio
+
+async def call_lm_studio_direct(prompt: str) -> dict:
+    """Direct fast-path to local LM Studio for simpler agents to save NVIDIA quota."""
+    try:
+        import aiohttp
+        import os
+        async with aiohttp.ClientSession() as session:
+            lm_payload = {
+                "model": "local-model",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.0,
+                "stream": False
+            }
+            lm_key = os.getenv("LM_STUDIO_API_KEY", "")
+            headers = {"Content-Type": "application/json"}
+            if lm_key:
+                headers["Authorization"] = f"Bearer {lm_key}"
+                
+                
+            async with session.post("http://127.0.0.1:1234/v1/chat/completions", json=lm_payload, headers=headers, timeout=300) as resp:
+                if resp.status == 200:
+                    lm_data = await resp.json()
+                    message_obj = lm_data["choices"][0]["message"]
+                    lm_content = message_obj.get("content", "")
+                    
+                    # If content is empty but it has reasoning_content (common with Qwen/DeepSeek reasoning models)
+                    if not lm_content and "reasoning_content" in message_obj:
+                        lm_content = message_obj["reasoning_content"]
+                        
+                    lm_content = lm_content.replace('```json', '').replace('```', '').strip()
+                    
+                    # Try to extract JSON if it wrapped it in thoughts
+                    json_str = ""
+                    in_json = False
+                    for line in lm_content.split('\n'):
+                        line = line.strip()
+                        if line.startswith('{'):
+                            in_json = True
+                        if in_json:
+                            json_str += line
+                        if line.endswith('}'):
+                            in_json = False
+                            
+                    if not json_str:
+                        json_str = lm_content
+                        
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        return {"decision": "HOLD", "confidence": 0, "reasoning": "JSON parse error from LM Studio"}
+                else:
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"LM Studio HTTP {resp.status}"}
+    except Exception as e:
+        err_msg = str(e)
+        if "Timeout" in err_msg or not err_msg:
+            err_msg = "Request timed out (Model too slow)"
+        return {"decision": "HOLD", "confidence": 0, "reasoning": f"LM Studio Connection Error: {err_msg}"}
+
+async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_name="apex_trader") -> dict:
+    """
+    Communicates with the local Hermes CLI via WSL subprocess.
+    Maintains persistent state using the provided session flag.
+    Simulates streaming to the frontend while waiting for the subprocess.
+    """
+    import tempfile
+    import os
+    import asyncio
+    
+    prompt = payload["messages"][-1]["content"]
+    
+    # Send initial stream message
+    if broadcast_callback:
+        asyncio.create_task(broadcast_callback({
+            "type": "hermes_activity",
+            "agent_status": "analyzing",
+            "message": "Hermes is evaluating market conditions...",
+            "reasoning": "Loading DOM and macro sensors into working memory...\nChecking open interest and toxicity metrics...\n"
+        }))
+
+    # Write prompt to a temp file to avoid bash escaping issues
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as f:
+        f.write(prompt)
+        temp_path = f.name
+        
+    wsl_path = temp_path.replace("C:\\", "/mnt/c/").replace("\\", "/")
+    
+    # Write the bash script to another temp file
+    bash_script = f'''#!/bin/bash
+export PATH="/home/hyper/.local/bin:$PATH"
+P=$(cat "{wsl_path}")
+OUTPUT=$(hermes -c {session_name} -z "$P" 2>&1)
+if [[ "$OUTPUT" == *"No session found"* ]]; then
+    OUTPUT=$(hermes -z "$P" 2>&1)
+    NEW_ID=$(hermes sessions list | grep -oE '^[0-9a-f]{{8}}' | head -n1)
+    if [ ! -z "$NEW_ID" ]; then
+        hermes sessions rename "$NEW_ID" "{session_name}" >/dev/null 2>&1
+    fi
+fi
+echo "$OUTPUT"
+'''
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh', encoding='utf-8', newline='\n') as f_sh:
+        f_sh.write(bash_script)
+        sh_path = f_sh.name
+        
+    wsl_sh_path = sh_path.replace("C:\\", "/mnt/c/").replace("\\", "/")
+
+    try:
+        cmd = f'bash "{wsl_sh_path}"'
+        
+        # Periodic "thinking" updates to keep UI alive
+        async def ui_keepalive():
+            dots = 1
+            while True:
+                await asyncio.sleep(2)
+                if broadcast_callback:
+                    await broadcast_callback({
+                        "type": "hermes_activity",
+                        "agent_status": "processing",
+                        "message": f"Running quantitative models{'.' * dots}",
+                        "reasoning": ""
+                    })
+                dots = (dots % 3) + 1
+
+        keepalive_task = asyncio.create_task(ui_keepalive())
+
+        import subprocess
+        creationflags = 0
+        if os.name == 'nt':
+            creationflags = subprocess.CREATE_NO_WINDOW
+            
+        process = await asyncio.create_subprocess_exec(
+            'wsl.exe', '-u', 'hyper', 'bash', '-lc', cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            creationflags=creationflags
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+        
+        keepalive_task.cancel()
+        
+        output = stdout.decode('utf-8').strip()
+        error_output = stderr.decode('utf-8').strip()
+        
+        if error_output:
+            print(f"[HERMES CLI STDERR] {error_output}")
+            
+        # Try to parse the JSON block from output
+        json_str = ""
+        in_json = False
+        for line in output.split('\n'):
+            line = line.strip()
+            if line.startswith('{'):
+                in_json = True
+            if in_json:
+                json_str += line
+            if line.endswith('}'):
+                in_json = False
+                
+        if not json_str:
+            json_str = output # Fallback if no clean brackets
+            
+        if "429" in output or "Too Many Requests" in output:
+            print("[HERMES RATE LIMIT] API provider 429 Rate Limit hit. Falling back to Local LM Studio.")
+            if broadcast_callback:
+                await broadcast_callback({
+                    "type": "hermes_activity",
+                    "agent_status": "processing",
+                    "message": "NVIDIA 429 Rate Limit Hit. Routing to LM Studio Fallback...",
+                    "reasoning": "Primary API exhausted. Using local offline model for consensus."
+                })
+                
+            try:
+                import aiohttp
+                import os
+                async with aiohttp.ClientSession() as session:
+                    lm_payload = {
+                        "model": "local-model",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.0,
+                        "stream": False
+                    }
+                    lm_key = os.getenv("LM_STUDIO_API_KEY", "")
+                    headers = {"Content-Type": "application/json"}
+                    if lm_key:
+                        headers["Authorization"] = f"Bearer {lm_key}"
+                        
+                    async with session.post("http://127.0.0.1:1234/v1/chat/completions", json=lm_payload, headers=headers, timeout=60) as resp:
+                        if resp.status == 200:
+                            lm_data = await resp.json()
+                            lm_content = lm_data["choices"][0]["message"]["content"]
+                            
+                            # Clean up potential markdown formatting from LM Studio
+                            lm_content = lm_content.replace('```json', '').replace('```', '').strip()
+                            try:
+                                json_str = lm_content
+                                result = json.loads(json_str)
+                                print("[LM STUDIO FALLBACK] Successfully parsed fallback evaluation.")
+                                return result
+                            except json.JSONDecodeError as e:
+                                print(f"[LM STUDIO FALLBACK] JSON Parse Error: {e}")
+                                return {"decision": "HOLD", "confidence": 0, "leverage": 1, "stop_loss_pct": 1.0, "take_profit_pct": 2.0, "entry_price": 0.0}
+                        else:
+                            err_txt = await resp.text()
+                            print(f"[LM STUDIO FALLBACK] Failed with status {resp.status}: {err_txt}")
+                            return {"decision": "HOLD", "confidence": 0, "leverage": 1, "stop_loss_pct": 1.0, "take_profit_pct": 2.0, "entry_price": 0.0}
+            except Exception as e:
+                print(f"[LM STUDIO FALLBACK] Connection Error: {e}")
+                return {"decision": "HOLD", "confidence": 0, "leverage": 1, "stop_loss_pct": 1.0, "take_profit_pct": 2.0, "entry_price": 0.0}
+            
+        try:
+            result = json.loads(json_str)
+            
+            if broadcast_callback:
+                await broadcast_callback({
+                    "type": "hermes_activity",
+                    "agent_status": "complete",
+                    "message": "Evaluation complete.",
+                    "reasoning": f"Final Decision: {result.get('decision', 'UNKNOWN')} | Confidence: {result.get('confidence', 0)}%\nSL: {result.get('stop_loss_pct', 0)}% | TP: {result.get('take_profit_pct', 0)}%"
+                })
+                
+            return result
+        except json.JSONDecodeError as e:
+            print(f"[HERMES CLI ERROR] Failed to parse JSON: {e}\nRaw Output: {output}")
+            return {}
+
+    except Exception as e:
+        print(f"[HERMES CLI EXCEPTION] {e}")
+        return {}
+    finally:
+        try:
+            os.remove(temp_path)
+            os.remove(sh_path)
+        except:
+            pass
+
+async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None) -> dict:
+    """
+    Master evaluator using the Single Continuous Hermes Pipeline.
+    Combines all context (Fundamental, Macro, Scalping DOM) into one prompt.
+    """
+    symbol = active_symbol
+    risk_profile = get_symbol_risk_profile(symbol)
+    
+    if broadcast_callback:
+        coro = broadcast_callback({
+            "type": "hermes_activity",
+            "agent_status": "assembling_context",
+            "message": f"Fetching full DOM and Macro context for {symbol}..."
+        })
+        if asyncio.iscoroutine(coro):
+            asyncio.create_task(coro)
+
+    print(f"[EVAL] Initiating 3-Agent Parallel Swarm for {symbol}...")
+
+    # Fetch FRED Macroeconomic Data
+    from core.exchange import fetch_fred_macro_data
+    fred_data = await fetch_fred_macro_data()
+    macro_context = f"US 10-Year Yield (DGS10) = {fred_data['dgs10']}%, Latest CPI = {fred_data['cpi']}"
+
+    # 1. CLAW Prompt (Institutional SMC - Complex -> Hermes/NVIDIA)
+    claw_prompt = f"""You are Antigravity CLAW, the Institutional SMC Agent.
+Asset: {symbol} | Type: {risk_profile['class']}
+Context: {market_data_text}
+Macro Context: {macro_context}
+Memory: {memory_text}
+Task: Perform deep Fundamental & Smart Money Concepts (SMC) analysis. Look for liquidity sweeps and institutional alignment. Filter liquidity sweeps against these fundamental flows.
+Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "leverage": <1-20>, "stop_loss_pct": <float>, "take_profit_pct": <float>, "reasoning": "..."}}"""
+
+    # 2. MACRO Prompt (News & Sentiment - Simple -> LM Studio)
+    macro_prompt = f"""You are Antigravity MACRO, the News & Sentiment Agent.
+Asset: {symbol}
+Context: {market_data_text}
+Task: Analyze multi-timeframe trends, moving averages, and forex news sentiment.
+Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "reasoning": "..."}}"""
+
+    # 3. SCALPER Prompt (Orderbook/DOM - Fast -> LM Studio)
+    scalper_prompt = f"""You are Antigravity SCALPER, the Orderbook DOM Agent.
+Asset: {symbol} | Live Price: {live_asset_price}
+DOM Data: {dom_data}
+Task: Analyze Level 2 Orderbook imbalances (OFI, VPIN) for sniper entry points. Focus on toxic orderflow.
+Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "entry_price": <float>, "reasoning": "..."}}"""
+
+    # Launch the parallel swarm
+    async def run_claw():
+        payload = {"messages": [{"role": "user", "content": claw_prompt}]}
+        return await call_hermes_gateway(payload, broadcast_callback, session_name="apex_claw")
+
+    async def run_macro():
+        await asyncio.sleep(0.5) # Stagger
+        return await call_lm_studio_direct(macro_prompt)
+
+    async def run_scalper():
+        await asyncio.sleep(1.0) # Stagger
+        return await call_lm_studio_direct(scalper_prompt)
+
+    if broadcast_callback:
+        coro = broadcast_callback({
+            "type": "hermes_activity",
+            "agent_status": "generating_strategy",
+            "message": "3-Agent Swarm deployed. Awaiting consensus..."
+        })
+        if asyncio.iscoroutine(coro): asyncio.create_task(coro)
+
+    # Gather results concurrently
+    claw_res, macro_res, scalper_res = await asyncio.gather(run_claw(), run_macro(), run_scalper())
+
+    # Consensus Logic
+    decisions = [
+        claw_res.get("decision", "HOLD").upper(),
+        macro_res.get("decision", "HOLD").upper(),
+        scalper_res.get("decision", "HOLD").upper()
+    ]
+    
+    buys = decisions.count("BUY")
+    sells = decisions.count("SELL")
+    
+    if buys >= 2:
+        final_decision = "BUY"
+    elif sells >= 2:
+        final_decision = "SELL"
+    else:
+        final_decision = "HOLD"
+
+    avg_conf = (
+        safe_int(claw_res.get("confidence", 0), 0, 0, 100) +
+        safe_int(macro_res.get("confidence", 0), 0, 0, 100) +
+        safe_int(scalper_res.get("confidence", 0), 0, 0, 100)
+    ) // 3
+
+    sl_pct, tp_pct, _ = clamp_risk_to_symbol(symbol, claw_res.get("stop_loss_pct", risk_profile["sl"]), claw_res.get("take_profit_pct", risk_profile["tp"]))
+    ai_leverage = safe_int(claw_res.get("leverage", 10), 10, 1, 20)
+    
+    reasoning_summary = f"Consensus: {buys} BUY, {sells} SELL.\n\n[CLAW - SMC Analysis]: {decisions[0]}\n{claw_res.get('reasoning', '')}\n\n[MACRO - Trend Analysis]: {decisions[1]}\n{macro_res.get('reasoning', '')}\n\n[SCALPER - DOM Analysis]: {decisions[2]}\n{scalper_res.get('reasoning', '')}"
+    
+    print(f"[SWARM] Final Consensus: {final_decision} ({avg_conf}%) | SL {sl_pct}% | TP {tp_pct}%")
+    
+    if broadcast_callback:
+        coro = broadcast_callback({
+            "type": "hermes_activity",
+            "agent_status": "idle",
+            "message": f"Consensus Reached: {final_decision} ({avg_conf}%)",
+            "reasoning_chunk": f"\n\n--- FINAL SWARM REPORT ---\n{reasoning_summary}"
+        })
+        if asyncio.iscoroutine(coro): asyncio.create_task(coro)
+
+    return {
+        "action": final_decision,
+        "confidence": avg_conf,
+        "leverage": ai_leverage,
+        "stop_loss": sl_pct,
+        "take_profit": tp_pct,
+        "volatility": "high" if avg_conf < 50 else "medium",
+        "entry_price": scalper_res.get("entry_price", live_asset_price),
+        "_debug": {
+            "hermes_reasoning": reasoning_summary
+        }
+    }
+def is_aplus_setup(market_data_text: str, trend_bias: dict, live_price: float, symbol: str, timestamp_str: str = "", smc_proximity_pct: float = 0.0015, ofi: float = 0.0, vpin: float = 0.0, vpin_side: str = "BALANCED", sweep_result: dict = None) -> tuple[bool, str]:
+    """
+    Mathematical Gatekeeper: Only allows A+ Setups to pass to the LLM.
+    0. CHALLENGE_MODE Gate: Institutional Liquidity Sweep must be confirmed.
+    1. Killzone Filter: Must be within London or NY session.
+    2. Trend Alignment: 1H and 4H scores must both be >= 30 (LONG) or <= -30 (SHORT).
+    3. R:R Ratio: Dynamic TP must be >= 1.5x Dynamic SL.
+    4. SMC Proximity: Live price must be within 0.15% of an Institutional OB/FVG.
+    """
+    from core.macro_sensors import get_smc_killzone
+    
+    # 0. Killzone Check (strict New York time)
+    kz_active, kz_name = get_smc_killzone()
+    if not kz_active:
+        return False, f"Price action outside Institutional Killzones ({kz_name})."
+
+    # 0b. CHALLENGE_MODE: Institutional Liquidity Sweep Hard Gate
+    # When active, NO trades pass unless a confirmed sweep (Turtle Soup / Judas Swing)
+    # has been detected. This enforces extreme R/R asymmetry for the GoatFunded challenge.
+    if CHALLENGE_MODE:
+        if sweep_result is None or not sweep_result.get("sweep_detected", False):
+            sweep_details = sweep_result.get("details", "No sweep data provided") if sweep_result else "Sweep result not passed to gatekeeper"
+            return False, f"CHALLENGE_MODE: No Institutional Liquidity Sweep detected. {sweep_details}"
+        else:
+            sweep_dir = sweep_result.get("direction", "NONE")
+            sweep_sl = sweep_result.get("stop_loss_anchor", 0.0)
+            print(f"[A+ CHALLENGE] ✅ Liquidity Sweep CONFIRMED: {sweep_dir} | SL Anchor: {sweep_sl:.5f} | {sweep_result.get('details', '')}")
+
+            # Drawdown Limit Rejection: Compute the SL % from sweep anchor to live price.
+            # If the distance exceeds GoatFunded's max drawdown, reject the trade.
+            if live_price > 0 and sweep_sl > 0:
+                if sweep_dir == "SHORT":
+                    sweep_sl_pct = abs(sweep_sl - live_price) / live_price * 100
+                else:  # LONG
+                    sweep_sl_pct = abs(live_price - sweep_sl) / live_price * 100
+                asset_limits = get_asset_limits(symbol)
+                if sweep_sl_pct > GOATFUNDED_MAX_DRAWDOWN_PCT:
+                    return False, (f"DRAWDOWN LIMIT BREACH: Sweep SL anchor requires {sweep_sl_pct:.2f}% risk "
+                                   f"(exceeds GoatFunded max {GOATFUNDED_MAX_DRAWDOWN_PCT}% drawdown). "
+                                   f"Asset: {asset_limits['asset_class']} | SL Anchor: {sweep_sl:.5f} | Price: {live_price:.5f}")
+                print(f"[RISK-MANAGER] Dynamic Risk Clamping Active: {asset_limits['asset_class']} | "
+                      f"Sweep SL: {sweep_sl_pct:.2f}% (limit: {GOATFUNDED_MAX_DRAWDOWN_PCT}%)")
+
+    if live_price <= 0:
+        return True, ""  # Skip if live price is unavailable (fallback)
+
+    # 1. Parse Dynamic Risk/Reward
+    import re
+    dyn_sl_match = re.search(r"Dynamic SL distance is ([\d\.]+)%", market_data_text)
+    dyn_tp_match = re.search(r"Dynamic TP distance is ([\d\.]+)%", market_data_text)
+    
+    if dyn_sl_match and dyn_tp_match:
+        dyn_sl = float(dyn_sl_match.group(1))
+        dyn_tp = float(dyn_tp_match.group(1))
+        rr = dyn_tp / dyn_sl if dyn_sl > 0 else 0
+        if rr < 1.5:
+            return False, f"Insufficient Dynamic R:R ({rr:.2f} < 1.5)"
+
+    # 2. Trend Alignment (1H Structure Gatekeeper)
+    per_tf = trend_bias.get("per_tf", {})
+    score_1h = per_tf.get("1h", 0)
+    score_4h = per_tf.get("4h", 0)
+
+    # Determine structural direction. Strict macro alignment is preferred, but the
+    # green-circle entry happens before 4H fully catches up, so a proven M15 pullback
+    # continuation can wake the agents early when H1 is not fighting the trade.
+    weighted = trend_bias.get("score", 0)
+    early_entry = {"pass": False, "reason": "Not checked"}
+    
+    if weighted >= 15 and score_1h >= 10:
+        target_dir = "LONG"
+    elif weighted <= -15 and score_1h <= -10:
+        target_dir = "SHORT"
+    else:
+        try:
+            from core.macro_sensors import get_early_trend_continuation
+            if weighted >= 12 and score_1h >= 0:
+                early_entry = get_early_trend_continuation(symbol, "BUY")
+                if early_entry.get("pass"):
+                    print(f"[A+ EARLY WAKE] BUY pullback continuation accepted before full 4H confirmation: {early_entry.get('reason')}")
+                    return True, ""
+            elif weighted <= -12 and score_1h <= 0:
+                early_entry = get_early_trend_continuation(symbol, "SELL")
+                if early_entry.get("pass"):
+                    print(f"[A+ EARLY WAKE] SELL pullback continuation accepted before full 4H confirmation: {early_entry.get('reason')}")
+                    return True, ""
+        except Exception as early_err:
+            early_entry = {"pass": False, "reason": str(early_err)}
+        return False, f"1H Market Structure Mismatch or Weak Macro Trend (Weighted: {weighted:+.0f}, 1H: {score_1h:+d}, 4H: {score_4h:+d}) | Early: {early_entry.get('reason')}"
+
+    # 2b. Order Flow Imbalance (OFI) Hard Gate — reject toxic liquidity traps
+    if target_dir == "LONG" and ofi < -500:
+        return False, f"Toxic Order Flow Imbalance Detected (OFI: {ofi:+.0f} < -500 while targeting LONG)"
+    if target_dir == "SHORT" and ofi > 500:
+        return False, f"Toxic Order Flow Imbalance Detected (OFI: {ofi:+.0f} > +500 while targeting SHORT)"
+
+    # 2c. VPIN Hard Gate — reject when informed traders are aggressively absorbing liquidity
+    if vpin >= 0.70:
+        return False, f"VPIN Toxic Flow Detected (VPIN: {vpin:.3f} >= 0.70 threshold). Informed institutional absorption in progress."
+    # Directional mismatch: elevated VPIN with dominant side opposing the trade
+    if vpin >= 0.50:
+        if target_dir == "LONG" and vpin_side == "SELL":
+            return False, f"VPIN Directional Conflict (VPIN: {vpin:.3f}, Dominant: SELL while targeting LONG)"
+        if target_dir == "SHORT" and vpin_side == "BUY":
+            return False, f"VPIN Directional Conflict (VPIN: {vpin:.3f}, Dominant: BUY while targeting SHORT)"
+
+    # 3. SMC Proximity Check
+    bullish_levels = []
+    bearish_levels = []
+    
+    bullish_fvg = re.search(r"Nearest Bullish FVG.*(?:mid|to) ([\d\.]+)", market_data_text)
+    if bullish_fvg: bullish_levels.append(float(bullish_fvg.group(1).replace(',', '')))
+        
+    bearish_fvg = re.search(r"Nearest Bearish FVG.*(?:mid|to) ([\d\.]+)", market_data_text)
+    if bearish_fvg: bearish_levels.append(float(bearish_fvg.group(1).replace(',', '')))
+        
+    bullish_ob = re.search(r"Nearest Bullish OB.*to ([\d\.]+)", market_data_text)
+    if bullish_ob: bullish_levels.append(float(bullish_ob.group(1).replace(',', '')))
+        
+    bearish_ob = re.search(r"Nearest Bearish OB.*to ([\d\.]+)", market_data_text)
+    if bearish_ob: bearish_levels.append(float(bearish_ob.group(1).replace(',', '')))
+
+    # Check distance to the appropriate levels
+    target_levels = bullish_levels if target_dir == "LONG" else bearish_levels
+    if not target_levels:
+        try:
+            from core.macro_sensors import get_early_trend_continuation
+            early_entry = get_early_trend_continuation(symbol, "BUY" if target_dir == "LONG" else "SELL")
+            if early_entry.get("pass"):
+                print(f"[A+ EARLY WAKE] No SMC level, but pullback continuation is clean: {early_entry.get('reason')}")
+                return True, ""
+        except Exception:
+            pass
+        return False, "No Institutional SMC levels (OB/FVG) detected to support entry. Blocking FOMO."
+        
+    closest_dist_pct = min(abs(live_price - lvl) / live_price for lvl in target_levels)
+    
+    # Instrument-aware strike zone: Metals need wider tolerance due to high candle volatility
+    _sym_upper = symbol.upper()
+    is_metal = any(m in _sym_upper for m in ("GOLD", "XAU", "SILVER", "XAG", "US30", "DJ30"))
+    proximity_buffer = 0.0080 if is_metal else 0.0040
+    
+    if closest_dist_pct > proximity_buffer:
+        side_str = "Demand/Support" if target_dir == "LONG" else "Supply/Resistance"
+        try:
+            from core.macro_sensors import get_early_trend_continuation
+            early_entry = get_early_trend_continuation(symbol, "BUY" if target_dir == "LONG" else "SELL")
+            if early_entry.get("pass"):
+                print(f"[A+ EARLY WAKE] SMC level is {closest_dist_pct*100:.2f}% away, but pullback continuation is clean: {early_entry.get('reason')}")
+                return True, ""
+        except Exception:
+            pass
+        return False, f"Price not in Institutional Strike Zone (Nearest {side_str} is {closest_dist_pct*100:.2f}% away, limit {proximity_buffer*100:.2f}%)"
+
+    return True, ""

@@ -3,7 +3,7 @@ import {
   Cpu, Wifi, Zap, TrendingUp, Layers, Globe, 
   Gauge, Search, RefreshCw, Activity, Shield,
   ArrowUpRight, ArrowDownRight, Target, Copy, Loader2, LineChart, ActivitySquare,
-  CheckCircle2, XCircle, Clock
+  CheckCircle2, XCircle, Clock, Terminal
 } from 'lucide-react';
 import { AdvancedRealTimeChart } from 'react-ts-tradingview-widgets';
 import { API_BASE } from '../lib/api';
@@ -665,6 +665,33 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
                   </div>
                 </div>
               ))}
+              
+              {/* HERMES LIVE ACTIVITY TERMINAL */}
+              {localMarketData.hermes_activity && (
+                <div className="mt-4 bg-black/80 rounded-2xl border border-white/10 overflow-hidden flex flex-col h-48">
+                  <div className="bg-white/5 px-4 py-2 border-b border-white/5 flex justify-between items-center shrink-0">
+                    <div className="flex items-center gap-2">
+                      <Terminal className="w-4 h-4 text-pink-400" />
+                      <span className="text-xs font-bold text-white tracking-widest uppercase">Hermes Live Feed</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${localMarketData.hermes_activity.status === 'idle' ? 'bg-slate-500' : 'bg-pink-500 animate-pulse'}`} />
+                      <span className="text-[10px] text-slate-400 uppercase font-mono">{localMarketData.hermes_activity.status}</span>
+                    </div>
+                  </div>
+                  <div className="p-3 flex-1 overflow-y-auto custom-scrollbar font-mono text-[10px] leading-relaxed text-slate-300">
+                    <p className="text-pink-400 mb-2">&gt; {localMarketData.hermes_activity.message}</p>
+                    {localMarketData.hermes_activity.reasoning ? (
+                      <div className="whitespace-pre-wrap">{localMarketData.hermes_activity.reasoning}</div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-slate-600 mt-2">
+                        {localMarketData.hermes_activity.status !== 'idle' && <Loader2 className="w-3 h-3 animate-spin" />}
+                        <span>Awaiting stream...</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

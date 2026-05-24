@@ -1,0 +1,47 @@
+# Apex Institutional Architecture Report
+
+## 1. High-Level Overview
+The system is built on a modern, real-time client-server architecture tailored for algorithmic trading. It comprises a React-based frontend and a Python FastAPI backend, integrated with advanced AI models via OpenRouter and NVIDIA APIs, and connected to the Delta Exchange for live trading. Process management is handled by PM2.
+
+## 2. Frontend Architecture
+- **Framework**: React.js with Vite as the build tool.
+- **Styling**: Tailwind CSS for responsive and utility-first UI design.
+- **Port**: Runs on port 5173 locally.
+- **Key Components**:
+  - `TradingCommandCenter.jsx`: The main trading dashboard providing a real-time view of market conditions, agent consensus, and portfolio metrics.
+  - `BacktestEngine.jsx`: Provides an AI-powered quantitative analysis backtesting interface.
+- **Data Flow**: Consumes real-time market data (Binance API for BTC/USDT) and trading state updates over WebSockets.
+
+## 3. Backend Architecture
+- **Framework**: FastAPI (Python), providing both REST APIs and a WebSocket server.
+- **Port**: Runs on port 8000.
+- **Key Files**:
+  - `nvidia_apex_trader/server.py`: The main entry point, handling API routing, WebSocket broadcasting (every 10 seconds), and system orchestration.
+  - `nvidia_apex_trader/core/exchange.py`: Manages secure integration with Delta Exchange using HMAC SHA256 authentication. Configurable for mainnet or testnet, with a "Shadow Mode" (`DRY_RUN = True`) for safe testing.
+- **Database**: SQLite (`apex_keys.db`) is used for localized, lightweight data storage.
+
+## 4. AI & Agent Architecture
+- **Provider Integrations**: 
+  - OpenRouter API for general intelligence and quantitative analysis tasks.
+  - NVIDIA API for specialized inference, adhering to a 40 RPM rate limit.
+- **Hermes Gateway & Pipeline**:
+  - The system utilizes a Single Continuous Hermes Pipeline via a local CLI/gateway (`call_hermes_gateway` in `brain.py`) which acts as the master evaluator for market conditions.
+  - Hermes activity (status, messaging, reasoning) is streamed directly to the frontend's "HERMES LIVE ACTIVITY TERMINAL".
+- **Pipeline Structure**: 
+  - `nvidia_apex_trader/core/brain.py`: Orchestrates a 3-Agent AI pipeline consisting of:
+    - CLAW Agent (Institutional SMC -> Hermes/NVIDIA)
+    - Macro Agent
+    - Scalper Agent
+  - These agents analyze live market data and emit consensus decisions dynamically.
+
+## 5. System Infrastructure & Deployment
+- **Process Manager**: PM2 handles service execution, defined in `ecosystem.config.js`. This manages both the frontend Vite dev server and the backend FastAPI process.
+- **Network Considerations**: Configured with IPv4 connectors. Backend CORS is set up to specifically allow `localhost:5173` along with `*` origin fallbacks.
+
+## 6. Real-Time Data Integration
+- **Live Market Data**: WebSocket integration broadcasting Binance API BTC/USDT prices.
+- **WebSocket Data**: Distributes real-time positions, equity updates, and AI consensus values to the frontend.
+
+## 7. Quality & Validation
+- **Backtesting**: Robust parsing of OpenRouter JSON responses, fallback simulation if OpenRouter fails.
+- **Safety**: Shadow mode allows full pipeline testing without live capital risk.

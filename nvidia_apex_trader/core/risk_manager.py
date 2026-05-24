@@ -12,8 +12,8 @@ import os
 # =============================================================================
 # CIRCUIT BREAKER CONFIGURATION
 # =============================================================================
-REALIZED_DRAWDOWN_LIMIT = 0.05   # 5% max REALIZED daily loss (closed trades)
-FLOATING_EMERGENCY_LIMIT = 0.20  # 20% max FLOATING drawdown (open trade emergency / margin-call shield)
+REALIZED_DRAWDOWN_LIMIT = 0.025   # 2.5% max REALIZED daily loss (GoatFunded limit is 3%)
+FLOATING_EMERGENCY_LIMIT = 0.020  # 2.0% max FLOATING drawdown per rule (GoatFunded limit)
 
 # Global state (module-level singleton)
 _circuit_state = {

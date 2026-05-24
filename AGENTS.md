@@ -76,3 +76,9 @@ DRY_RUN=True
 - OpenRouter responses may contain malformed JSON (robust parsing implemented)
 - Delta Exchange mainnet ready (testnet keys currently configured)
 - WebSocket broadcasts every 10 seconds with real market data
+
+## Workflow Protocol: GitHub Checkpoints
+**CRITICAL RULE**: BEFORE making ANY code changes or starting a new implementation phase, you MUST ALWAYS create a checkpoint on GitHub to preserve the working state.
+1. Commit the current state: `git add .` and `git commit -m "Checkpoint: <Brief description>"`
+2. Create a tag matching the repository's tagging format (e.g., `Apex-v[Version]-[Feature-Name]` or `v[Version]`). Example: `git tag Apex-v2.7-Risk-Engine`
+3. Push the commit and the tag: `git push && git push origin --tags`

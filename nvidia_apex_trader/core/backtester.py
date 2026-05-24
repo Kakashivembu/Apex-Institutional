@@ -30,9 +30,7 @@ import MetaTrader5 as mt5
 from core.data import compute_trend_indicators, format_for_llm
 from core.mt5_engine import _resolve_tradeable_symbol
 from core.brain import (
-    get_market_sentiment,
-    analyze_macro_trend,
-    find_sniper_entry,
+    evaluate_market,
     compute_trend_bias,
     format_trend_bias,
     detect_trend_exhaustion,
@@ -380,6 +378,7 @@ async def run_historical_backtest(
                         current_price=current_price,
                         symbol=resolved,
                         candle_time=candle_time,
+                        window=window,
                     )
                     _eval_cache[cache_key] = result
                 except Exception as e:
@@ -486,20 +485,22 @@ async def run_historical_backtest(
 # AI CONSENSUS (Backtest-specific — no live MT5 calls)
 # ══════════════════════════════════════════════════════════════════════════
 
-async def _evaluate_backtest(market_data_text: str, current_price: float, symbol: str, candle_time: str = "") -> dict:
+async def _evaluate_backtest(market_data_text: str, current_price: float, symbol: str, candle_time: str = "", window: list = None) -> dict:
     """
     Lightweight consensus pipeline for backtesting.
-    Runs CLAW → Macro → Scalper with 2s stagger (same as live),
-    but feeds synthetic market data instead of live MT5 ticks.
+    Now directly feeds into the Single Continuous Hermes Pipeline via evaluate_market.
     """
     # Build trend bias from candle data (zero API cost)
     trend_bias = compute_trend_bias(market_data_text)
     trend_score = trend_bias["score"]
     trend_label = trend_bias["label"]
-    trend_bias_text = format_trend_bias(trend_bias)
+    
+    # ── LIQUIDITY SWEEP CHECK ──
+    from core.macro_sensors import detect_liquidity_sweep
+    sweep_result = detect_liquidity_sweep(window) if window else None
 
     # ── A+ SETUP GATEKEEPER ──
-    aplus_pass, reject_reason = is_aplus_setup(market_data_text, trend_bias, float(current_price or 0.0), symbol, timestamp_str=candle_time)
+    aplus_pass, reject_reason = is_aplus_setup(market_data_text, trend_bias, float(current_price or 0.0), symbol, timestamp_str=candle_time, sweep_result=sweep_result)
     if not aplus_pass:
         return {
             "action": "HOLD",
@@ -507,111 +508,42 @@ async def _evaluate_backtest(market_data_text: str, current_price: float, symbol
             "reasoning": f"Rejected by A+ Filter: {reject_reason}"
         }
 
-    # 1. CLAW — Fundamental Desk (uses market data text, not live macro sensors)
-    claw_task = asyncio.create_task(
-        get_market_sentiment(NVIDIA_KEYS, symbol=symbol, market_data_text=market_data_text)
+    print("[BACKTEST-THROTTLE] Pacing AI requests to protect IP limits. Sleeping 15s...")
+    await asyncio.sleep(15)
+
+    # Call the new unified evaluate_market
+    result = await evaluate_market(
+        memory_text="[BACKTEST ENVIRONMENT]",
+        market_data_text=market_data_text,
+        margin=10000.0,
+        dom_data="",
+        active_positions=[],
+        force_run=True,
+        active_symbol=symbol,
+        live_asset_price=current_price,
+        broadcast_callback=None
     )
-    await asyncio.sleep(2.0)
-
-    # 2. Macro Trend Follower
-    macro_key = NVIDIA_KEYS[0] if NVIDIA_KEYS else NVIDIA_API_KEY
-    macro_task = asyncio.create_task(
-        analyze_macro_trend(macro_key, "Sentiment: Processing...", market_data_text, market_data_text, "", "", symbol=symbol, trend_bias_text=trend_bias_text)
-    )
-    await asyncio.sleep(2.0)
-
-    # 3. Scalper
-    scalper_key = NVIDIA_KEYS[1 % len(NVIDIA_KEYS)] if len(NVIDIA_KEYS) > 1 else NVIDIA_API_KEY
-    scalper_task = asyncio.create_task(
-        find_sniper_entry(scalper_key, market_data_text, current_price, "", "", symbol=symbol, trend_bias_text=trend_bias_text)
-    )
-
-    sentiment_result = await claw_task
-    macro_result = await macro_task
-    scalper_result = await scalper_task
-
-    # Consensus: weighted voting engine (mirrors live trading)
-    macro_decision = str(macro_result.get("decision", "HOLD")).upper()
-    scalper_decision = str(scalper_result.get("decision", "HOLD")).upper()
-    claw_vote = sentiment_result.get("sentiment", "NEUTRAL").upper()
-
-    direction_map = {
-        "BUY": 1,
-        "LONG": 1,
-        "BULLISH": 1,
-        "SELL": -1,
-        "SHORT": -1,
-        "BEARISH": -1,
-        "HOLD": 0,
-        "NEUTRAL": 0,
-    }
-
-    def normalize_confidence(value):
-        confidence_value = float(value or 0)
-        if confidence_value > 1:
-            return confidence_value / 100
-        return confidence_value
-
-    weighted_votes = [
-        direction_map.get(macro_decision, 0) * normalize_confidence(macro_result.get("confidence", 0)) * 0.40,
-        direction_map.get(claw_vote, 0) * normalize_confidence(sentiment_result.get("confidence", 0)) * 0.35,
-        direction_map.get(scalper_decision, 0) * normalize_confidence(scalper_result.get("confidence", 0)) * 0.25,
-    ]
-    hold_penalty = sum([
-        0.40 * normalize_confidence(macro_result.get("confidence", 0)) if direction_map.get(macro_decision, 0) == 0 else 0,
-        0.35 * normalize_confidence(sentiment_result.get("confidence", 0)) if direction_map.get(claw_vote, 0) == 0 else 0,
-        0.25 * normalize_confidence(scalper_result.get("confidence", 0)) if direction_map.get(scalper_decision, 0) == 0 else 0,
-    ])
-    directional_score = sum(weighted_votes)
-    if directional_score > 0:
-        final_score = max(0, directional_score - hold_penalty)
-    else:
-        final_score = min(0, directional_score + hold_penalty)
-
-    if final_score >= 0.40:
-        final_action = "LONG"
-    elif final_score <= -0.40:
-        final_action = "SHORT"
-    else:
-        final_action = "HOLD"
-
-    # Trend veto: direction must agree with the mathematical trend sign
-    if final_action == "SHORT" and trend_score > 0:
-        final_action = "HOLD"
-    elif final_action == "LONG" and trend_score < 0:
-        final_action = "HOLD"
-
+    
+    final_action = result.get("action", "HOLD")
+    
     # Exhaustion veto
     exhaustion = detect_trend_exhaustion(market_data_text, final_action)
     if final_action in ("LONG", "SHORT") and exhaustion.get("veto"):
         final_action = "HOLD"
 
-    # Risk parameters — big-move targets for $5-10 profit per trade
-    ai_sl = scalper_result.get("stop_loss_pct", 1.5)
-    ai_tp = scalper_result.get("take_profit_pct", 4.0)
-
-    # R:R gate — align with live M15 scalping execution floor
+    ai_sl = result.get("stop_loss", 1.5)
+    ai_tp = result.get("take_profit", 4.0)
+    
     rr = round(ai_tp / ai_sl, 2) if ai_sl > 0 else 0
     if final_action in ("LONG", "SHORT") and (rr < 1.5 or ai_tp < 0.2):
         final_action = "HOLD"
-
-    reasoning_parts = [
-        f"CLAW={claw_vote}",
-        f"Macro={macro_decision}({macro_result.get('confidence', 0)}%)",
-        f"Scalper={scalper_decision}({scalper_result.get('confidence', 0)}%)",
-        f"Trend={trend_label}({trend_score:+d})",
-        f"SL={ai_sl:.1f}% TP={ai_tp:.1f}% R:R={rr:.2f}",
-    ]
-
-    print("[BACKTEST-THROTTLE] Pacing AI requests to protect IP limits. Sleeping 15s...")
-    await asyncio.sleep(15)
 
     return {
         "action": final_action,
         "stop_loss_pct": ai_sl,
         "take_profit_pct": ai_tp,
-        "leverage": scalper_result.get("leverage", 10),
-        "reasoning": " | ".join(reasoning_parts),
+        "leverage": result.get("leverage", 10),
+        "reasoning": result.get("_debug", {}).get("hermes_reasoning", ""),
     }
 
 

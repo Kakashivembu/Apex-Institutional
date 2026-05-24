@@ -1,5 +1,7 @@
 import logging
 import MetaTrader5 as mt5
+import numpy as np
+from numba import njit
 
 logger = logging.getLogger("Macro_Sensors")
 logger.setLevel(logging.INFO)
@@ -811,6 +813,29 @@ def _try_dom_ofi(symbol: str) -> tuple[bool, float]:
     return True, float(delta_bid_vol - delta_ask_vol)
 
 
+@njit(fastmath=True)
+def _compute_tvd_ofi_njit(closes, opens, tick_vols):
+    # Calculate signed flow
+    signed_flows = (closes - opens) * tick_vols
+    
+    # Split: recent 3 candles vs baseline 7 candles
+    baseline = signed_flows[:7]
+    recent = signed_flows[7:]
+    
+    # Mathematical logic
+    baseline_mean = np.mean(baseline) if len(baseline) > 0 else 0.0
+    recent_sum = np.sum(recent)
+    
+    ofi = recent_sum - (baseline_mean * len(recent))
+    
+    baseline_magnitude = np.mean(np.abs(baseline)) if len(baseline) > 0 else 1.0
+    if baseline_magnitude > 0:
+        normalized_ofi = ofi / baseline_magnitude * 100.0
+    else:
+        normalized_ofi = 0.0
+        
+    return normalized_ofi
+
 def _tick_volume_delta_ofi(symbol: str) -> float:
     """Tick-Volume-Weighted Price Delta OFI — works on ALL MT5 brokers.
 
@@ -839,30 +864,13 @@ def _tick_volume_delta_ofi(symbol: str) -> float:
         # Use only the 10 closed candles (index 0-9), skip the forming bar (index 10)
         closed = rates[:10]
 
-        # Compute signed flow for each candle
-        signed_flows = []
-        for bar in closed:
-            price_delta = float(bar['close']) - float(bar['open'])
-            tick_vol = float(bar['tick_volume'])
-            signed_flows.append(price_delta * tick_vol)
+        # Extract to NumPy arrays for Numba compilation
+        closes = np.array([r['close'] for r in closed], dtype=np.float64)
+        opens = np.array([r['open'] for r in closed], dtype=np.float64)
+        tick_vols = np.array([r['tick_volume'] for r in closed], dtype=np.float64)
 
-        # Split: recent 3 candles vs baseline 7 candles
-        baseline = signed_flows[:7]
-        recent = signed_flows[7:]  # last 3 closed candles
-
-        baseline_mean = sum(baseline) / len(baseline) if baseline else 0.0
-        recent_sum = sum(recent)
-
-        # OFI = recent institutional flow minus expected baseline flow
-        ofi = recent_sum - (baseline_mean * len(recent))
-
-        # Normalize by baseline magnitude to get a scale-independent signal
-        # This makes OFI comparable across XAUUSD ($3300) vs EURUSD ($1.13)
-        baseline_magnitude = sum(abs(f) for f in baseline) / len(baseline) if baseline else 1.0
-        if baseline_magnitude > 0:
-            normalized_ofi = ofi / baseline_magnitude * 100
-        else:
-            normalized_ofi = 0.0
+        # Execute C-compiled logic
+        normalized_ofi = _compute_tvd_ofi_njit(closes, opens, tick_vols)
 
         return round(normalized_ofi, 1)
 
@@ -910,25 +918,103 @@ def calculate_order_flow_imbalance(symbol: str) -> float:
 #   5. Range: 0.0 (balanced) to 1.0 (fully one-sided / toxic)
 # =============================================================================
 
+@njit(fastmath=True)
+def _compute_vpin_njit(highs, lows, closes, tick_vols, num_buckets):
+    n = len(highs)
+    buy_vols = np.zeros(n)
+    sell_vols = np.zeros(n)
+    total_volume = 0.0
+    
+    # Step 1: Bulk Volume Classification
+    for i in range(n):
+        tv = tick_vols[i]
+        if tv <= 0:
+            continue
+        rng = highs[i] - lows[i]
+        if rng > 0:
+            bf = (closes[i] - lows[i]) / rng
+        else:
+            bf = 0.5
+        buy_vols[i] = tv * bf
+        sell_vols[i] = tv * (1.0 - bf)
+        total_volume += tv
+        
+    if total_volume <= 0:
+        return 0.0, 0, 0.0, 0.0
+        
+    target_bucket_size = total_volume / max(num_buckets, 1)
+    if target_bucket_size <= 0:
+        return 0.0, 0, 0.0, 0.0
+        
+    # Step 2: Volume-Synchronized Buckets
+    bucket_buy = 0.0
+    bucket_sell = 0.0
+    bucket_vol = 0.0
+    
+    # Arrays to store bucket results (oversized for safety)
+    max_b = num_buckets + 10
+    buckets_buy = np.zeros(max_b)
+    buckets_sell = np.zeros(max_b)
+    buckets_imbalance = np.zeros(max_b)
+    b_idx = 0
+    
+    for i in range(n):
+        rem_buy = buy_vols[i]
+        rem_sell = sell_vols[i]
+        rem_tot = buy_vols[i] + sell_vols[i]
+        
+        while rem_tot > 0:
+            space = target_bucket_size - bucket_vol
+            if rem_tot <= space:
+                bucket_buy += rem_buy
+                bucket_sell += rem_sell
+                bucket_vol += rem_tot
+                rem_tot = 0.0
+            else:
+                frac = space / rem_tot if rem_tot > 0 else 0.0
+                bucket_buy += rem_buy * frac
+                bucket_sell += rem_sell * frac
+                bucket_vol += space
+                rem_buy *= (1.0 - frac)
+                rem_sell *= (1.0 - frac)
+                rem_tot -= space
+                
+            if bucket_vol >= target_bucket_size * 0.999:
+                if b_idx < max_b:
+                    buckets_buy[b_idx] = bucket_buy
+                    buckets_sell[b_idx] = bucket_sell
+                    buckets_imbalance[b_idx] = abs(bucket_buy - bucket_sell) / bucket_vol if bucket_vol > 0 else 0.0
+                    b_idx += 1
+                bucket_buy = 0.0
+                bucket_sell = 0.0
+                bucket_vol = 0.0
+                
+    if b_idx == 0:
+        return 0.0, 0, 0.0, 0.0
+        
+    # Step 3: VPIN Calculation (mean absolute imbalance across buckets)
+    start_idx = max(0, b_idx - num_buckets)
+    valid_buckets = b_idx - start_idx
+    
+    imbalance_sum = 0.0
+    recent_buy_sum = 0.0
+    recent_sell_sum = 0.0
+    
+    for i in range(start_idx, b_idx):
+        imbalance_sum += buckets_imbalance[i]
+        recent_buy_sum += buckets_buy[i]
+        recent_sell_sum += buckets_sell[i]
+        
+    vpin = imbalance_sum / valid_buckets
+    return min(1.0, max(0.0, vpin)), valid_buckets, recent_buy_sum, recent_sell_sum
+
 def calculate_vpin(symbol: str, num_candles: int = 50, num_buckets: int = 10) -> dict:
     """
     Computes VPIN (Volume-Synchronized Probability of Informed Trading).
 
     Uses Bulk Volume Classification (BVC) on M1 candles to detect when
     institutional informed traders are aggressively absorbing liquidity.
-
-    Args:
-        symbol: MT5 symbol name
-        num_candles: Number of M1 candles to process (default 50)
-        num_buckets: Number of volume-synchronized buckets to average (default 10)
-
-    Returns:
-        {
-            "vpin": float (0.0 to 1.0),
-            "is_toxic": bool (True if vpin >= 0.70),
-            "dominant_side": "BUY" | "SELL" | "BALANCED",
-            "bucket_count": int
-        }
+    Now C-Compiled with Numba for microsecond execution.
     """
     _default = {"vpin": 0.0, "is_toxic": False, "dominant_side": "BALANCED", "bucket_count": 0}
 
@@ -939,104 +1025,29 @@ def calculate_vpin(symbol: str, num_candles: int = 50, num_buckets: int = 10) ->
         if not info.visible:
             mt5.symbol_select(symbol, True)
 
-        # Fetch M1 candles (num_candles + 1 to skip the forming bar)
+        # Fetch M1 candles
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, num_candles + 1)
         if rates is None or len(rates) < num_candles + 1:
             return _default
 
-        # Use only closed candles (skip the last forming bar)
+        # Use only closed candles
         closed = rates[:num_candles]
 
-        # Step 1: Bulk Volume Classification (BVC)
-        # For each candle, classify volume as buy or sell
-        classified = []
-        total_volume = 0
-        for bar in closed:
-            tick_vol = float(bar['tick_volume'])
-            high = float(bar['high'])
-            low = float(bar['low'])
-            close = float(bar['close'])
+        # Extract to NumPy arrays for Numba compilation
+        highs = np.array([r['high'] for r in closed], dtype=np.float64)
+        lows = np.array([r['low'] for r in closed], dtype=np.float64)
+        closes = np.array([r['close'] for r in closed], dtype=np.float64)
+        tick_vols = np.array([r['tick_volume'] for r in closed], dtype=np.float64)
 
-            if tick_vol <= 0:
-                continue
+        # Execute C-compiled VPIN logic
+        vpin_val, valid_buckets, total_recent_buy, total_recent_sell = _compute_vpin_njit(
+            highs, lows, closes, tick_vols, num_buckets
+        )
 
-            candle_range = high - low
-            if candle_range > 0:
-                # BVC formula: buy fraction = (close - low) / (high - low)
-                buy_fraction = (close - low) / candle_range
-            else:
-                # Doji / zero-range candle: split 50/50
-                buy_fraction = 0.5
-
-            buy_vol = tick_vol * buy_fraction
-            sell_vol = tick_vol * (1.0 - buy_fraction)
-
-            classified.append({"buy": buy_vol, "sell": sell_vol, "total": tick_vol})
-            total_volume += tick_vol
-
-        if not classified or total_volume <= 0:
+        if valid_buckets == 0:
             return _default
 
-        # Step 2: Volume-Synchronized Buckets
-        # Each bucket holds a fixed volume = total_volume / num_buckets
-        target_bucket_size = total_volume / max(num_buckets, 1)
-        if target_bucket_size <= 0:
-            return _default
-
-        buckets = []
-        bucket_buy = 0.0
-        bucket_sell = 0.0
-        bucket_vol = 0.0
-
-        for bar_data in classified:
-            remaining_buy = bar_data["buy"]
-            remaining_sell = bar_data["sell"]
-            remaining_total = bar_data["total"]
-
-            while remaining_total > 0:
-                space_left = target_bucket_size - bucket_vol
-
-                if remaining_total <= space_left:
-                    # Entire bar fits in the current bucket
-                    bucket_buy += remaining_buy
-                    bucket_sell += remaining_sell
-                    bucket_vol += remaining_total
-                    remaining_total = 0
-                else:
-                    # Split the bar across bucket boundary
-                    fill_fraction = space_left / remaining_total if remaining_total > 0 else 0
-                    bucket_buy += remaining_buy * fill_fraction
-                    bucket_sell += remaining_sell * fill_fraction
-                    bucket_vol += space_left
-
-                    remaining_buy *= (1.0 - fill_fraction)
-                    remaining_sell *= (1.0 - fill_fraction)
-                    remaining_total -= space_left
-
-                # Check if bucket is full
-                if bucket_vol >= target_bucket_size * 0.999:
-                    buckets.append({
-                        "buy": bucket_buy,
-                        "sell": bucket_sell,
-                        "total": bucket_vol,
-                        "imbalance": abs(bucket_buy - bucket_sell) / bucket_vol if bucket_vol > 0 else 0
-                    })
-                    bucket_buy = 0.0
-                    bucket_sell = 0.0
-                    bucket_vol = 0.0
-
-        if not buckets:
-            return _default
-
-        # Step 3: VPIN = mean absolute imbalance across all buckets
-        # Use the most recent N buckets
-        recent_buckets = buckets[-num_buckets:]
-        vpin = sum(b["imbalance"] for b in recent_buckets) / len(recent_buckets)
-        vpin = round(min(1.0, max(0.0, vpin)), 3)
-
-        # Determine dominant side from the most recent buckets
-        total_recent_buy = sum(b["buy"] for b in recent_buckets)
-        total_recent_sell = sum(b["sell"] for b in recent_buckets)
+        vpin = round(float(vpin_val), 3)
 
         if total_recent_buy > total_recent_sell * 1.15:
             dominant = "BUY"
@@ -1051,10 +1062,159 @@ def calculate_vpin(symbol: str, num_candles: int = 50, num_buckets: int = 10) ->
             "vpin": vpin,
             "is_toxic": is_toxic,
             "dominant_side": dominant,
-            "bucket_count": len(recent_buckets)
+            "bucket_count": int(valid_buckets)
         }
 
     except Exception as e:
         print(f"[VPIN] Error computing VPIN for {symbol}: {e}")
         return _default
+
+
+# =============================================================================
+# INSTITUTIONAL LIQUIDITY SWEEP DETECTOR — Turtle Soup / Judas Swing
+# =============================================================================
+# Detects when price sweeps above a structural high (or below a structural low)
+# to grab resting liquidity, then REJECTS back inside the range — the hallmark
+# of an institutional Liquidity Sweep (ICT Turtle Soup / Judas Swing).
+#
+# This is a zero-API-cost, pure-Python pre-filter. Callers pass in raw OHLC
+# candle dicts (same format as detect_fair_value_gaps / detect_order_blocks).
+#
+# Window Layout:
+#   rates[-1]  = current forming candle (EXCLUDED — not yet closed)
+#   rates[-2]  = trigger candle (most recently CLOSED candle)
+#   rates[:-2] = historical baseline for structural high/low calculation
+# =============================================================================
+
+def detect_liquidity_sweep(rates: list, lookback_period: int = 50) -> dict:
+    """
+    Detects Institutional Liquidity Sweeps (Turtle Soup / Judas Swings).
+
+    A sweep occurs when price briefly pierces a structural level to trigger
+    resting stop-loss orders, then reverses — indicating smart money has
+    grabbed liquidity and is likely to drive price in the opposite direction.
+
+    Args:
+        rates: List of candle dicts [{open, high, low, close}, ...] oldest first.
+               Must include at least lookback_period + 2 candles.
+        lookback_period: Number of historical candles to scan for structural
+                         high/low (default 50). Excludes forming and trigger candles.
+
+    Returns:
+        {
+            "sweep_detected": bool,
+            "direction": "LONG" | "SHORT" | "NONE",
+            "stop_loss_anchor": float,    # Tightest SL = trigger candle extreme
+            "structural_high": float,
+            "structural_low": float,
+            "trigger_candle_idx": int,     # Index of trigger candle in rates
+            "details": str                 # Human-readable explanation
+        }
+    """
+    _default = {
+        "sweep_detected": False,
+        "direction": "NONE",
+        "stop_loss_anchor": 0.0,
+        "structural_high": 0.0,
+        "structural_low": 0.0,
+        "trigger_candle_idx": -1,
+        "details": ""
+    }
+
+    # ── Guard: need at least lookback + forming candle + trigger candle ──
+    min_candles = lookback_period + 2
+    if not rates or len(rates) < min_candles:
+        _default["details"] = f"Insufficient candle data ({len(rates) if rates else 0} < {min_candles})"
+        return _default
+
+    # ── Window Extraction ──
+    # Exclude: rates[-1] (forming candle) and rates[-2] (trigger candle)
+    trigger_candle = rates[-2]
+    historical_baseline = rates[:-2][-lookback_period:]
+
+    if len(historical_baseline) < lookback_period:
+        _default["details"] = f"Baseline window too small ({len(historical_baseline)} < {lookback_period})"
+        return _default
+
+    # ── Structural Liquidity Pools ──
+    structural_high = max(float(c.get("high", 0)) for c in historical_baseline)
+    structural_low = min(float(c.get("low", float("inf"))) for c in historical_baseline)
+
+    # ── Trigger Candle Anatomy ──
+    t_open = float(trigger_candle.get("open", 0))
+    t_high = float(trigger_candle.get("high", 0))
+    t_low = float(trigger_candle.get("low", 0))
+    t_close = float(trigger_candle.get("close", 0))
+
+    body_size = abs(t_close - t_open)
+    # Prevent division-by-zero on doji candles: use a tiny epsilon
+    body_size_safe = max(body_size, 1e-10)
+
+    upper_wick = t_high - max(t_open, t_close)
+    lower_wick = min(t_open, t_close) - t_low
+
+    trigger_idx = len(rates) - 2
+
+    # ── Bearish Sweep Detection (SHORT Signal) ──
+    # Trap:      trigger high pierced above structural high (grabbed buy-stop liquidity)
+    # Rejection: trigger closed BELOW structural high (smart money rejected the breakout)
+    # Footprint: upper wick > body * 1.2 (institutional rejection wick)
+    bearish_trap = t_high > structural_high
+    bearish_rejection = t_close < structural_high
+    bearish_footprint = upper_wick > (body_size_safe * 1.2)
+
+    if bearish_trap and bearish_rejection and bearish_footprint:
+        result = {
+            "sweep_detected": True,
+            "direction": "SHORT",
+            "stop_loss_anchor": t_high,
+            "structural_high": round(structural_high, 5),
+            "structural_low": round(structural_low, 5),
+            "trigger_candle_idx": trigger_idx,
+            "details": (
+                f"BEARISH SWEEP: Trigger high {t_high:.5f} pierced structural high "
+                f"{structural_high:.5f}, closed at {t_close:.5f} (below). "
+                f"Upper wick {upper_wick:.5f} > body {body_size:.5f} × 1.2 = "
+                f"{body_size_safe * 1.2:.5f}. SL anchor: {t_high:.5f}"
+            )
+        }
+        logger.info(f"[SWEEP] 🔴 {result['details']}")
+        return result
+
+    # ── Bullish Sweep Detection (LONG Signal) ──
+    # Trap:      trigger low pierced below structural low (grabbed sell-stop liquidity)
+    # Rejection: trigger closed ABOVE structural low (smart money rejected the breakdown)
+    # Footprint: lower wick > body * 1.2 (institutional rejection wick)
+    bullish_trap = t_low < structural_low
+    bullish_rejection = t_close > structural_low
+    bullish_footprint = lower_wick > (body_size_safe * 1.2)
+
+    if bullish_trap and bullish_rejection and bullish_footprint:
+        result = {
+            "sweep_detected": True,
+            "direction": "LONG",
+            "stop_loss_anchor": t_low,
+            "structural_high": round(structural_high, 5),
+            "structural_low": round(structural_low, 5),
+            "trigger_candle_idx": trigger_idx,
+            "details": (
+                f"BULLISH SWEEP: Trigger low {t_low:.5f} pierced structural low "
+                f"{structural_low:.5f}, closed at {t_close:.5f} (above). "
+                f"Lower wick {lower_wick:.5f} > body {body_size:.5f} × 1.2 = "
+                f"{body_size_safe * 1.2:.5f}. SL anchor: {t_low:.5f}"
+            )
+        }
+        logger.info(f"[SWEEP] 🟢 {result['details']}")
+        return result
+
+    # ── No Sweep Detected ──
+    _default["structural_high"] = round(structural_high, 5)
+    _default["structural_low"] = round(structural_low, 5)
+    _default["trigger_candle_idx"] = trigger_idx
+    _default["details"] = (
+        f"No sweep. Trigger H/L: {t_high:.5f}/{t_low:.5f} vs "
+        f"Structural H/L: {structural_high:.5f}/{structural_low:.5f}. "
+        f"Upper wick: {upper_wick:.5f}, Lower wick: {lower_wick:.5f}, Body: {body_size:.5f}"
+    )
+    return _default
 

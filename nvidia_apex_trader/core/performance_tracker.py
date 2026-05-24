@@ -4,6 +4,7 @@ Implements mathematically optimal position sizing and live session metrics.
 """
 import os
 import json
+import numpy as np
 from datetime import datetime, date
 
 # ============================================================
@@ -43,6 +44,34 @@ def kelly_position_size(confidence_pct: float, rr_ratio: float, max_risk_pct: fl
     
     # Floor at 0.1% minimum
     return max(0.001, round(risk_pct, 5))
+
+
+# ============================================================
+# MONTE CARLO RISK ENGINE (PROBABILITY OF RUIN)
+# ============================================================
+
+def compute_probability_of_ruin(win_rate: float, avg_winner: float, avg_loser: float, starting_pnl: float = 0.0, max_drawdown: float = -20.0, trades: int = 20, iterations: int = 1000) -> float:
+    """
+    Runs a Monte Carlo simulation projecting the next N trades to calculate 
+    the probability of the equity curve hitting the GoatFunded max drawdown limit.
+    """
+    if win_rate <= 0 or avg_winner <= 0 or avg_loser >= 0:
+        return 0.0
+        
+    ruin_count = 0
+    p_win = max(0.01, min(0.99, win_rate / 100.0))
+    p_loss = 1.0 - p_win
+    
+    for _ in range(iterations):
+        # Simulate trade results
+        results = np.random.choice([avg_winner, avg_loser], size=trades, p=[p_win, p_loss])
+        cumulative = starting_pnl + np.cumsum(results)
+        
+        if np.any(cumulative <= max_drawdown):
+            ruin_count += 1
+            
+    probability = (ruin_count / iterations) * 100.0
+    return round(probability, 2)
 
 
 # ============================================================
@@ -109,17 +138,24 @@ def get_session_stats() -> dict:
                 streak -= 1
             else:
                 break
+                
+    net_pnl = sum(t["pnl"] for t in _session_trades)
+    
+    prob_ruin = 0.0
+    if total >= 3 and avg_winner > 0 and avg_loser < 0:
+        prob_ruin = compute_probability_of_ruin(win_rate, avg_winner, avg_loser, starting_pnl=net_pnl)
     
     return {
         "session_trades": total,
         "win_rate": round(win_rate, 1),
-        "net_pnl": round(sum(t["pnl"] for t in _session_trades), 2),
+        "net_pnl": round(net_pnl, 2),
         "profit_factor": profit_factor,
         "avg_winner": avg_winner,
         "avg_loser": avg_loser,
         "best_trade": round(best, 2),
         "worst_trade": round(worst, 2),
         "streak": streak,  # Positive = win streak, negative = loss streak
+        "probability_of_ruin": prob_ruin,
     }
 
 

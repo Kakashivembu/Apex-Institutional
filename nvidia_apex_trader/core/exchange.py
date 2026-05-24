@@ -1,7 +1,9 @@
 import asyncio
 import os
 import logging
+import logging
 import time
+import aiohttp
 from typing import List, Dict
 import MetaTrader5 as mt5
 
@@ -28,6 +30,51 @@ async def _ensure_mt5(api_key: str, api_secret: str, network: str) -> bool:
 
 def get_delta_url(network: str = "testnet") -> str:
     return "MT5_NATIVE"
+
+# =====================================================================
+# FRED MACROECONOMIC DATA INTEGRATION
+# =====================================================================
+_fred_cache = {"data": None, "timestamp": 0}
+
+async def fetch_fred_macro_data() -> dict:
+    """Fetches real-time US 10-Year Treasury Yield and CPI from FRED."""
+    global _fred_cache
+    if time.time() - _fred_cache["timestamp"] < 3600 and _fred_cache["data"]:
+        return _fred_cache["data"]
+
+    api_key = os.getenv("FRED_API_KEY", "")
+    default_data = {"dgs10": "4.20", "cpi": "3.2", "cached": False, "error": "No API Key"}
+
+    if not api_key:
+        print("[FRED] Warning: FRED_API_KEY not found in .env. Using fallback macro data.")
+        return default_data
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Fetch DGS10 (US 10-Year Yield)
+            dgs_url = f"https://api.stlouisfed.org/fred/series/observations?series_id=DGS10&api_key={api_key}&file_type=json&sort_order=desc&limit=1"
+            async with session.get(dgs_url) as resp:
+                if resp.status == 200:
+                    dgs_data = await resp.json()
+                    dgs10_val = dgs_data["observations"][0]["value"]
+                else:
+                    dgs10_val = default_data["dgs10"]
+
+            # Fetch CPI
+            cpi_url = f"https://api.stlouisfed.org/fred/series/observations?series_id=CPIAUCSL&api_key={api_key}&file_type=json&sort_order=desc&limit=1"
+            async with session.get(cpi_url) as resp:
+                if resp.status == 200:
+                    cpi_data = await resp.json()
+                    cpi_val = cpi_data["observations"][0]["value"]
+                else:
+                    cpi_val = default_data["cpi"]
+
+        result = {"dgs10": dgs10_val, "cpi": cpi_val, "cached": True, "error": None}
+        _fred_cache = {"data": result, "timestamp": time.time()}
+        return result
+    except Exception as e:
+        print(f"[FRED] Error fetching macro data: {e}")
+        return default_data
 
 # =====================================================================
 # MT5 BRIDGE

@@ -201,7 +201,8 @@ const App = () => {
     circuit_breaker: false,
     circuit_reason: '',
     drawdown_pct: 0.0,
-    time_until_reset: ''
+    time_until_reset: '',
+    hermes_activity: { status: 'idle', message: 'Waiting for market cycle...', reasoning: '' }
   });
 
   // Fetch system info on component mount
@@ -313,6 +314,23 @@ const App = () => {
                 velocity_high: message.velocity_high ?? prev.macro_matrix?.velocity_high ?? false,
               }
             }));
+          } else if (message.type === 'hermes_activity') {
+            setMarketData(prev => {
+              if (message.agent_status === 'assembling_context') {
+                return {
+                  ...prev,
+                  hermes_activity: { status: message.agent_status, message: message.message || '', reasoning: '' }
+                };
+              }
+              return {
+                ...prev,
+                hermes_activity: {
+                  status: message.agent_status || prev.hermes_activity?.status,
+                  message: message.message || prev.hermes_activity?.message,
+                  reasoning: (prev.hermes_activity?.reasoning || '') + (message.reasoning_chunk || '')
+                }
+              };
+            });
           } else if (message.type === 'trading_status_update') {
             // Update the trading status when we receive an update from the server
             setTradingEnabled(message.trading_enabled);
