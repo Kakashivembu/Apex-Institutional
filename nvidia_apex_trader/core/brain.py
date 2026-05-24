@@ -921,10 +921,31 @@ async def call_lm_studio_direct(prompt: str) -> dict:
             err_msg = "Request timed out (Model too slow)"
         return {"decision": "HOLD", "confidence": 0, "reasoning": f"LM Studio Connection Error: {err_msg}"}
 
+async def _clean_json_response(content: str) -> dict:
+    import json
+    import re
+    match = re.search(r'\{.*\}', content, re.DOTALL)
+    if match:
+        content = match.group(0)
+    else:
+        content = content.replace('```json', '').replace('```', '').strip()
+    try:
+        clean_json = content.replace('\n', ' ')
+        return json.loads(clean_json)
+    except json.JSONDecodeError:
+        decision_match = re.search(r'"decision"\s*:\s*"([A-Z]+)"', content, re.IGNORECASE)
+        conf_match = re.search(r'"confidence"\s*:\s*(\d+)', content)
+        if decision_match:
+            return {
+                "decision": decision_match.group(1).upper(),
+                "confidence": int(conf_match.group(1)) if conf_match else 50,
+                "reasoning": "Rescued via Regex from broken JSON output."
+            }
+        return None
+
 async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_name="apex_trader") -> dict:
     """
-    Communicates with the Forge Guardrails proxy.
-    The proxy handles model routing, JSON formatting, and fallback rescue-parsing automatically.
+    Loops through the multi-tier fallback architecture.
     """
     import aiohttp
     import json
@@ -933,75 +954,77 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
     
     prompt = payload["messages"][-1]["content"]
     
-    # Send initial stream message
     if broadcast_callback:
         asyncio.create_task(broadcast_callback({
             "type": "hermes_activity",
             "agent_status": "analyzing",
-            "message": "AI Agents routing through Forge Proxy...",
-            "reasoning": "Loading DOM and macro sensors into working memory...\nChecking open interest and toxicity metrics...\n"
+            "message": f"[{session_name.upper()}] Routing through AI Gateway...",
+            "reasoning": "Loading DOM and macro sensors into working memory...\nChecking endpoints..."
         }))
 
-    forge_url = os.getenv("FORGE_PROXY_URL", "http://localhost:8081/v1/chat/completions")
-    api_key = os.getenv("NVIDIA_API_KEY", "")
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
+    import random
+    import shlex
     
-    # Construct an OpenAI-compatible payload. Forge ignores model or routes it properly.
-    proxy_payload = {
-        "model": "meta/llama-3.1-70b-instruct",
-        "messages": payload["messages"],
-        "temperature": 0.0,
-    }
-
+    # Load-balance NVIDIA keys natively by passing to the Hermes subprocess environment
+    NVIDIA_KEYS = [k.strip() for k in os.getenv("NVIDIA_API_KEY", "").split(",") if k.strip()]
+    nim_key = random.choice(NVIDIA_KEYS) if NVIDIA_KEYS else os.getenv("NVIDIA_API_KEY", "")
+    
+    env = os.environ.copy()
+    env["NVIDIA_API_KEY"] = nim_key
+    
+    skills_path = "/mnt/f/NEW NVdia Apex Ultimate/.agent/skills.md"
+    
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(forge_url, json=proxy_payload, headers=headers, timeout=120) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    content = data["choices"][0]["message"]["content"]
-                    
-                    # Forge guarantees valid JSON, but we clean potential markdown block wrappers
-                    clean_content = content.replace('```json', '').replace('```', '').strip()
-                    result = json.loads(clean_content)
-                    
-                    if broadcast_callback:
-                        await broadcast_callback({
-                            "type": "hermes_activity",
-                            "agent_status": "complete",
-                            "message": "Evaluation complete.",
-                            "reasoning": f"Final Decision: {result.get('decision', 'UNKNOWN')} | Confidence: {result.get('confidence', 0)}%\nSL: {result.get('stop_loss_pct', 0)}% | TP: {result.get('take_profit_pct', 0)}%"
-                        })
-                    return result
-                else:
-                    error_text = await resp.text()
-                    print(f"[FORGE PROXY HTTP {resp.status}] {error_text}")
-                    
-                    if broadcast_callback:
-                        await broadcast_callback({
-                            "type": "hermes_activity",
-                            "agent_status": "generating_strategy",
-                            "message": f"Forge Proxy HTTP {resp.status}. Falling back to LM Studio...",
-                            "reasoning": "Proxy failed. Engaging local fallback."
-                        })
-                    print(f"[{session_name.upper()}] Falling back to LM Studio due to HTTP {resp.status}...")
-                    return await call_lm_studio_direct(payload["messages"][0]["content"])
+        process = await asyncio.create_subprocess_exec(
+            "wsl", "--", "/home/hyper/.hermes/hermes-agent/venv/bin/python", "-m", "hermes_cli.main", 
+            "chat", "-Q", "-q", prompt, "-s", skills_path, "--yolo", "--accept-hooks",
+            "--provider", "nvidia", "-m", "meta/llama-3.1-70b-instruct",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env
+        )
+        
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+        
+        if process.returncode != 0:
+            err_msg = stderr.decode('utf-8')
+            out_msg = stdout.decode('utf-8')
+            full_err = f"OUT: {out_msg[:200]} | ERR: {err_msg[:200]}"
+            print(f"[{session_name.upper()}] HERMES CLI Failed: {full_err}")
+            if broadcast_callback:
+                await broadcast_callback({
+                    "type": "hermes_activity",
+                    "agent_status": "generating_strategy",
+                    "message": f"HERMES CLI failed. Returning HOLD.",
+                    "reasoning": f"Error: {full_err[:100]}"
+                })
+            return {"decision": "HOLD", "confidence": 0, "reasoning": f"Hermes CLI Error: {full_err[:100]}"}
+            
+        content = stdout.decode('utf-8')
+        result = await _clean_json_response(content)
+        
+        if result:
+            if broadcast_callback:
+                await broadcast_callback({
+                    "type": "hermes_activity",
+                    "agent_status": "complete",
+                    "message": f"Evaluation complete via HERMES NATIVE CLI.",
+                    "reasoning": f"Final Decision: {result.get('decision', 'UNKNOWN')} | Confidence: {result.get('confidence', 0)}%"
+                })
+            return result
+        else:
+            print(f"[{session_name.upper()}] HERMES returned invalid JSON: {content[:100]}")
+            return {"decision": "HOLD", "confidence": 0, "reasoning": "Hermes CLI returned invalid JSON"}
+            
+    except asyncio.TimeoutError:
+        print(f"[{session_name.upper()}] HERMES CLI timeout.")
+        return {"decision": "HOLD", "confidence": 0, "reasoning": "Hermes WSL CLI timed out"}
     except Exception as e:
-        print(f"[FORGE PROXY ERROR] {e}")
-        if broadcast_callback:
-            await broadcast_callback({
-                "type": "hermes_activity",
-                "agent_status": "generating_strategy",
-                "message": f"Forge Proxy Exception. Falling back to LM Studio...",
-                "reasoning": "Proxy failed. Engaging local fallback."
-            })
-        print(f"[{session_name.upper()}] Falling back to LM Studio due to Exception...")
-        return await call_lm_studio_direct(payload["messages"][0]["content"])
+        print(f"[{session_name.upper()}] HERMES CLI Exception: {str(e)}")
+        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Hermes WSL CLI Exception: {str(e)}"}
 
-async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None) -> dict:
+
+async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None, smc_data: dict = None) -> dict:
     """
     Master evaluator using the Single Continuous Hermes Pipeline.
     Combines all context (Fundamental, Macro, Scalping DOM) into one prompt.
@@ -1055,11 +1078,11 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
 
     async def run_macro():
         await asyncio.sleep(0.5) # Stagger
-        return await call_lm_studio_direct(macro_prompt)
+        return await call_hermes_gateway({"messages": [{"role": "user", "content": macro_prompt}]}, broadcast_callback, session_name="apex_macro")
 
     async def run_scalper():
         await asyncio.sleep(1.0) # Stagger
-        return await call_lm_studio_direct(scalper_prompt)
+        return await call_hermes_gateway({"messages": [{"role": "user", "content": scalper_prompt}]}, broadcast_callback, session_name="apex_scalper")
 
     if broadcast_callback:
         coro = broadcast_callback({
@@ -1072,19 +1095,27 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
     # Gather results concurrently
     claw_res, macro_res, scalper_res = await asyncio.gather(run_claw(), run_macro(), run_scalper())
 
-    # Consensus Logic
-    decisions = [
-        claw_res.get("decision", "HOLD").upper(),
-        macro_res.get("decision", "HOLD").upper(),
-        scalper_res.get("decision", "HOLD").upper()
-    ]
+    # Weighted Consensus Logic
+    claw_dec = claw_res.get("decision", "HOLD").upper()
+    macro_dec = macro_res.get("decision", "HOLD").upper()
+    scalper_dec = scalper_res.get("decision", "HOLD").upper()
+
+    decisions = [claw_dec, macro_dec, scalper_dec]
     
-    buys = decisions.count("BUY")
-    sells = decisions.count("SELL")
+    def score_decision(d):
+        if d == "BUY": return 1.0
+        if d == "SELL": return -1.0
+        return 0.0
+
+    # Weights: CLAW (50%), MACRO (25%), SCALPER (25%)
+    net_score = (score_decision(claw_dec) * 0.50) + \
+                (score_decision(macro_dec) * 0.25) + \
+                (score_decision(scalper_dec) * 0.25)
     
-    if buys >= 2:
+    # Thresholds: +/- 0.40 required to override HOLD
+    if net_score >= 0.40:
         final_decision = "BUY"
-    elif sells >= 2:
+    elif net_score <= -0.40:
         final_decision = "SELL"
     else:
         final_decision = "HOLD"
@@ -1096,8 +1127,24 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
     ) // 3
 
     sl_pct, tp_pct, _ = clamp_risk_to_symbol(symbol, claw_res.get("stop_loss_pct", risk_profile["sl"]), claw_res.get("take_profit_pct", risk_profile["tp"]))
+    
+    # --- SWEEP SL OVERRIDE (CHALLENGE MODE 1:10 R:R) ---
+    if smc_data and smc_data.get("sweep_detected"):
+        anchor = smc_data.get("sweep_sl_anchor", 0.0)
+        direction = smc_data.get("sweep_direction", "NONE")
+        if anchor > 0 and live_asset_price > 0 and final_decision == direction:
+            distance = abs(live_asset_price - anchor)
+            dynamic_sl_pct = (distance / live_asset_price) * 100.0
+            # Add a microscopic buffer (0.01%) above the wick
+            sl_pct = round(dynamic_sl_pct + 0.01, 3)
+            # Enforce 1:10 Risk-to-Reward minimum for Turtle Soup setups
+            tp_pct = round(sl_pct * 10.0, 3)
+            print(f"[JUDAS SWING] SL strictly pegged to wick anchor {anchor}. R:R mapped to 1:10 (TP {tp_pct}%)")
+
     ai_leverage = safe_int(claw_res.get("leverage", 10), 10, 1, 20)
     
+    buys = decisions.count("BUY")
+    sells = decisions.count("SELL")
     reasoning_summary = f"Consensus: {buys} BUY, {sells} SELL.\n\n[CLAW - SMC Analysis]: {decisions[0]}\n{claw_res.get('reasoning', '')}\n\n[MACRO - Trend Analysis]: {decisions[1]}\n{macro_res.get('reasoning', '')}\n\n[SCALPER - DOM Analysis]: {decisions[2]}\n{scalper_res.get('reasoning', '')}"
     
     print(f"[SWARM] Final Consensus: {final_decision} ({avg_conf}%) | SL {sl_pct}% | TP {tp_pct}%")
