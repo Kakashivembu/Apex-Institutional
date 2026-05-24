@@ -822,7 +822,13 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         record_nvidia_call()
         record_nvidia_call()
         
-        action = result.get("action", "HOLD")
+        action_raw = result.get("action", "HOLD").upper()
+        if action_raw == "BUY":
+            action = "LONG"
+        elif action_raw == "SELL":
+            action = "SHORT"
+        else:
+            action = action_raw
         
         last_swarm_decisions = [
             {
