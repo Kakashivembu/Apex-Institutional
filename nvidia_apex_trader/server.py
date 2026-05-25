@@ -212,6 +212,7 @@ last_market_data = {}  # Stores latest MT5 price data + sentiment for autopsy co
 last_swarm_decisions = []
 last_equity = {"total": 0, "daily_pnl": 0, "daily_change_pct": 0}
 last_consensus = {"direction": "HOLD", "strength": 50}
+last_smc_data = {}  # Extracted LuxAlgo SMC data for the frontend
 live_market_price = 0.0  # Real-time price from MT5 IPC
 last_margin = {
     "available_margin": 0.0,
@@ -222,7 +223,7 @@ last_margin = {
 }
 
 # Trading execution state
-trading_enabled = False  # Default DISARMED (Shadow Mode) â€” AI agents sleep until ARMED
+trading_enabled = True  # Default ARMED on startup
 
 # FIX #3: Stack Direction Lock â€” once 1st position opens on a symbol, lock direction for all subsequent stacks
 # Reset when: circuit breaker trips OR all positions on that symbol close
@@ -554,9 +555,25 @@ def calculate_consensus():
 
     return {"direction": direction, "strength": min(100, int(abs(final_score) * 100))}
 
+def calculate_atr(candles: list, period: int = 14) -> float:
+    if not candles or len(candles) < period + 1:
+        return 0.0
+    tr_list = []
+    for i in range(1, len(candles)):
+        h = float(candles[i].get("high", 0))
+        l = float(candles[i].get("low", 0))
+        c = float(candles[i-1].get("close", 0))
+        tr = max(h - l, abs(h - c), abs(l - c))
+        tr_list.append(tr)
+    
+    atr = sum(tr_list[:period]) / period
+    for i in range(period, len(tr_list)):
+        atr = (atr * (period - 1) + tr_list[i]) / period
+    return atr
+
 async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
     """Fetch all account data. If skip_consensus=True, skips the expensive AI pipeline."""
-    global last_positions, last_equity, last_swarm_decisions, last_consensus, last_margin, account_balances
+    global last_positions, last_equity, last_swarm_decisions, last_consensus, last_margin, account_balances, last_smc_data
     
     active_keys = key_manager.get_active_keys()
     
@@ -792,6 +809,31 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             if luxalgo_lines:
                 smc_section += "\n\n=== ADVANCED SMC (LUXALGO) ===\n" + "\n".join(luxalgo_lines)
             
+            # --- INSTITUTIONAL LIQUIDITY SWEEPS (JUDAS SWING) ---
+            from core.macro_sensors import detect_liquidity_sweep
+            sweep = detect_liquidity_sweep(raw_1h, lookback_period=50)
+            if sweep.get("sweep_detected", False):
+                sweep_str = f"INSTITUTIONAL LIQUIDITY SWEEP DETECTED!\nDirection Bias: {sweep['direction']}\nDetails: {sweep['details']}\nOptimal SL Anchor: {sweep['stop_loss_anchor']}"
+                smc_section += f"\n\n=== 🚨 HIGH PROBABILITY SETUPS 🚨 ===\n{sweep_str}"
+                print(f"[SMC-SWEEP] {sweep['direction']} Sweep Detected! Anchor: {sweep['stop_loss_anchor']}")
+            
+            _atr = calculate_atr(raw_1h, period=14)
+            _last_price = raw_1h[-1].get("close", 1) if raw_1h else 1
+            _atr_pct = (_atr / _last_price) * 100 if _last_price > 0 else 0
+
+            last_smc_data[symbol] = {
+                "liquidity_pools": eqh_eql_str,
+                "premium_discount": pd_zones_str,
+                "market_structure": structure_str,
+                "atr": _atr,
+                "atr_pct": _atr_pct,
+                "sweep_detected": sweep.get("sweep_detected", False),
+                "sweep_direction": sweep.get("direction", "NONE"),
+                "sweep_sl_anchor": sweep.get("stop_loss_anchor", 0.0),
+                "sweep_details": sweep.get("details", "")
+            }
+
+            
         else:
             smc_section = "=== INSTITUTIONAL SMC LEVELS ===\nCandle data unavailable."
     except Exception as smc_err:
@@ -833,7 +875,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             force_run=False,
             active_symbol=symbol,
             live_asset_price=live_market_price,
-            broadcast_callback=manager.broadcast
+            broadcast_callback=manager.broadcast,
+            smc_data=last_smc_data.get(symbol, {})
         )
         
         # Track NVIDIA NIM API usage (3 calls per consensus: CLAW + Macro + Scalper)
@@ -945,14 +988,18 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
 
         # --- GATE 2: Full London/New York Session Filter (NY Time) ---
         if not entry_blocked:
-            from core.macro_sensors import get_smc_killzone
-            kz_active, kz_name = get_smc_killzone()
-            if not kz_active:
-                import pytz
-                from datetime import datetime as _dt
-                _ny_now = _dt.now(pytz.utc).astimezone(pytz.timezone('America/New_York'))
-                print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping entry. Active session is London/New York 2:00 AM-5:00 PM NY.")
-                entry_blocked = True
+            # Crypto is 24/7, do not block entries based on Forex session times
+            if params.get("mode") == "crypto":
+                pass
+            else:
+                from core.macro_sensors import get_smc_killzone
+                kz_active, kz_name = get_smc_killzone(symbol)
+                if not kz_active:
+                    import pytz
+                    from datetime import datetime as _dt
+                    _ny_now = _dt.now(pytz.utc).astimezone(pytz.timezone('America/New_York'))
+                    print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping entry. Active session is London/New York 2:00 AM-5:00 PM NY.")
+                    entry_blocked = True
 
         # --- MOMENTUM BREAKOUT OVERRIDE ---
         # Detect early session open breakouts to bypass slow H1 EMAs
@@ -1434,7 +1481,19 @@ async def step_trailing_loop():
                             continue
                         
                         trail_key = f"{account_name}:{product_id}"
-                        cfg = get_trail_config(symbol)  # Asset-class-aware: Gold vs Forex
+                        cfg = get_trail_config(symbol).copy()  # Copy to avoid mutating global template
+                        
+                        # --- ATR-Based Dynamic Trailing Stops ---
+                        dynamic_atr_pct = last_smc_data.get(symbol, {}).get("atr_pct", 0.0)
+                        if dynamic_atr_pct > 0.0:
+                            # If ATR is 0.2%: Initial SL = 0.3%, T1 Trigger = 0.2%, T2 Trigger = 0.4%
+                            cfg["initial_sl_pct"] = max(dynamic_atr_pct * 1.5, cfg.get("initial_sl_pct", 0.2))
+                            cfg["tier1_trigger_pct"] = dynamic_atr_pct * 1.0
+                            cfg["tier1_sl_pct"] = dynamic_atr_pct * 0.2
+                            cfg["tier2_trigger_pct"] = dynamic_atr_pct * 2.0
+                            cfg["tier2_trail_pct"] = dynamic_atr_pct * 0.5
+                            cfg["tier3_trigger_pct"] = dynamic_atr_pct * 3.0
+                            cfg["tier3_trail_pct"] = dynamic_atr_pct * 0.25
                         
                         # Fetch symbol precision ONCE per position per cycle
                         _sym_info = await asyncio.to_thread(mt5.symbol_info, symbol)
@@ -1631,24 +1690,7 @@ async def step_trailing_loop():
                             else:
                                 math_sl = round(round(entry_price * (1 - cfg["tier1_sl_pct"] / 100) / tick) * tick, digits)
                             math_wants_update = True
-                            
-                            # ── SECURE BAG: Atomic 50% profit extraction at first profit tier ──
-                            if not state.get("secure_bag_extracted", False):
-                                import MetaTrader5 as _mt5_sb
-                                sb_order_type = _mt5_sb.ORDER_TYPE_BUY if side == "long" else _mt5_sb.ORDER_TYPE_SELL
-                                sb_success = await asyncio.to_thread(
-                                    _execute_secure_bag_partial,
-                                    int(product_id), symbol, state["size"], sb_order_type
-                                )
-                                if sb_success:
-                                    extracted_lots = round(state["size"] * 0.5, 2)
-                                    remaining_lots = round(state["size"] - extracted_lots, 2)
-                                    print(f"[SECURE-BAG] {account_name}:{symbol} Ticket #{product_id} | Extracted {extracted_lots} lots | Remaining {remaining_lots} lots")
-                                    state["secure_bag_extracted"] = True
-                                    state["size"] = remaining_lots
-                                    save_flight_state(step_trail_state, ai_predictive_traps, force=True)
-                                else:
-                                    print(f"[SECURE-BAG] WARNING: Partial close failed for {symbol} #{product_id}. SL move proceeds anyway.")
+                            # SECURE BAG MOVED: Only trigger on predicted reversal danger
                         
                         # â”€â”€ CANDIDATE B: AI Predictive Trap SL â”€â”€
                         trap_sl = None
@@ -1673,6 +1715,40 @@ async def step_trailing_loop():
                                 if trap_hit and sl_improves:
                                     trap_sl = round(round(trap_protective / tick) * tick, digits)
                                     trap_triggered = True
+                        
+                        # ── SECURE BAG REVERSAL DEFENSE ──
+                        # Only trigger Secure Bag (partial close) if we are in profit AND a reversal is imminent
+                        reversal_danger = False
+                        reversal_reason = ""
+                        
+                        if trap_triggered:
+                            reversal_danger = True
+                            reversal_reason = "AI Predictive Trap Hit"
+                            
+                        # Also check if SMC detected a sweep AGAINST us
+                        symbol_smc = last_smc_data.get(symbol, {})
+                        if symbol_smc.get("sweep_detected"):
+                            sweep_dir = symbol_smc.get("sweep_direction")
+                            if (side == "long" and sweep_dir == "SHORT") or (side == "short" and sweep_dir == "LONG"):
+                                reversal_danger = True
+                                reversal_reason = "SMC Sweep Against Position"
+                                
+                        if reversal_danger and state["current_tier"] >= 1 and not state.get("secure_bag_extracted", False):
+                            import MetaTrader5 as _mt5_sb
+                            sb_order_type = _mt5_sb.ORDER_TYPE_BUY if side == "long" else _mt5_sb.ORDER_TYPE_SELL
+                            sb_success = await asyncio.to_thread(
+                                _execute_secure_bag_partial,
+                                int(product_id), symbol, state["size"], sb_order_type
+                            )
+                            if sb_success:
+                                extracted_lots = round(state["size"] * 0.5, 2)
+                                remaining_lots = max(0.0, round(state["size"] - extracted_lots, 2))
+                                print(f"[SECURE-BAG] REVERSAL DANGER ({reversal_reason})! {account_name}:{symbol} Ticket #{product_id} | Extracted {extracted_lots} lots | Remaining {remaining_lots} lots")
+                                state["secure_bag_extracted"] = True
+                                state["size"] = remaining_lots
+                                save_flight_state(step_trail_state, ai_predictive_traps, force=True)
+                            else:
+                                print(f"[SECURE-BAG] WARNING: Partial close failed for {symbol} #{product_id}. SL move proceeds anyway.")
                         
                         # â”€â”€ UNIFIED DECISION: Pick the MORE PROTECTIVE SL â”€â”€
                         final_sl = state["current_active_sl"]
@@ -2112,7 +2188,7 @@ async def _get_bot_perf_for_broadcast() -> dict:
 
 async def market_data_loop():
     global last_swarm_decisions, last_positions, last_equity, last_consensus, last_margin, backtest_scheduled, cached_backtest
-    global live_market_price
+    global live_market_price, last_smc_data
     
     # Initialize the variable at the start to prevent UnboundLocalError
     last_swarm_decisions = [{"action": "HOLD", "reasoning": "Initializing AI consensus..."}]
@@ -2195,7 +2271,8 @@ async def market_data_loop():
             if active_keys:
                 print(f"[REAL DATA] Scanning Fleet: {scan_symbols}")
                 # Fetch baseline state using the first symbol just to populate the dashboard basics
-                await fetch_real_market_data(scan_symbols[0], skip_consensus=True)
+                if scan_symbols:
+                    await fetch_real_market_data(scan_symbols[0], skip_consensus=True)
 
                 if circuit_breaker_active:
                     last_consensus = {
@@ -2333,6 +2410,7 @@ async def market_data_loop():
                     "positions": last_positions,
                     "equity": last_equity,
                     "consensus": last_consensus,
+                    "smc_data": last_smc_data.get(market_data.get("symbol", TARGET_SYMBOLS[0])) if market_data else {},
                     "margin": last_margin,
                     "fleet_symbols": TARGET_SYMBOLS,
                     "market_data": market_data,

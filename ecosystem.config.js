@@ -68,8 +68,8 @@ module.exports = {
       max_restarts: 10,
       restart_delay: 5000,
       merge_logs: true,
-      out_file: "./logs/forge-out.log",
-      error_file: "./logs/forge-error.log",
+      out_file: "/dev/null",
+      error_file: "/dev/null",
       env: {
         PYTHONUNBUFFERED: "1",
         OPENAI_API_KEY: nvidiaKey,

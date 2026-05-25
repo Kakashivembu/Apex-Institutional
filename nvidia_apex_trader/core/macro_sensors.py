@@ -431,32 +431,59 @@ async def detect_tick_velocity(symbol: str) -> dict:
         "ma_vol": round(float(ma_vol), 2)
     }
 
-def get_smc_killzone() -> tuple:
+def get_smc_killzone(symbol: str = None) -> tuple:
     """
-    Full London + New York trading-session gate using New York time.
-
-    Active window:
-      - 2:00 AM to 5:00 PM NY Time, continuous.
-
-    This keeps the engine awake through full London, London/New York overlap,
-    NY lunch, and full New York instead of only narrow killzone slices.
+    Global Session Matrix filtering based on symbol assignments.
+    Synchronizes backend evaluation with the frontend UI session matrix.
     """
     import pytz
     from datetime import datetime
 
-    ny_tz = pytz.timezone('America/New_York')
-    ny_time = datetime.now(pytz.utc).astimezone(ny_tz)
-    current_time_float = ny_time.hour + (ny_time.minute / 60.0)
+    utc_now = datetime.now(pytz.utc)
+    current_hour_utc = utc_now.hour + (utc_now.minute / 60.0)
+    
+    # Strip suffixes like .x or .m
+    clean_symbol = symbol.split('.')[0] if symbol else ""
 
-    # 05:27 NY is tradable: London continuation remains active until 08:00 NY.
-    if 2.0 <= current_time_float < 8.0:
-        return True, "London Session"
-    if 8.0 <= current_time_float < 12.0:
-        return True, "London/NY Overlap"
-    if 12.0 <= current_time_float < 17.0:
-        return True, "New York Session"
+    # Master Rule for Gold
+    if clean_symbol == "XAUUSD":
+        if 8.0 <= current_hour_utc < 16.0:
+            return True, "London/NY Overlap (Gold Master Rule)"
+        return False, f"Outside Gold Trading Window (08:00-16:00 UTC). Current UTC: {current_hour_utc:.2f}"
 
-    return False, "Outside London/New York Session"
+    # Session Definitions (UTC)
+    sydney_active = (current_hour_utc >= 22.0) or (current_hour_utc < 7.0)
+    tokyo_active = (current_hour_utc >= 23.0) or (current_hour_utc < 8.0)
+    london_active = 7.0 <= current_hour_utc < 16.0
+    ny_active = 12.0 <= current_hour_utc < 21.0
+
+    if not symbol:
+        # Fallback to London/NY logic if no symbol provided
+        if london_active or ny_active:
+            return True, "London/New York Active"
+        return False, "Outside Active Sessions"
+
+    # Assigned Pairs
+    sydney_pairs = ["AUDUSD", "NZDUSD", "AUDJPY", "NZDJPY"]
+    tokyo_pairs = ["USDJPY", "AUDUSD", "NZDUSD", "AUDJPY", "NZDJPY"]
+    london_pairs = ["EURUSD", "GBPUSD", "USDCHF", "EURGBP"]
+    ny_pairs = ["EURUSD", "USDJPY", "GBPUSD", "USDCAD", "GBPJPY"]
+
+    active_sessions = []
+    
+    if sydney_active and clean_symbol in sydney_pairs:
+        active_sessions.append("Sydney")
+    if tokyo_active and clean_symbol in tokyo_pairs:
+        active_sessions.append("Tokyo")
+    if london_active and clean_symbol in london_pairs:
+        active_sessions.append("London")
+    if ny_active and clean_symbol in ny_pairs:
+        active_sessions.append("New York")
+
+    if active_sessions:
+        return True, f"{'/'.join(active_sessions)} Session"
+    
+    return False, f"Symbol {clean_symbol} has no active session"
 
 
 def is_killzone_active() -> bool:

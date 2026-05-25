@@ -380,7 +380,7 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-5 gap-4 w-full xl:w-auto xl:max-w-[1200px]">
+        <div className="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-6 gap-4 w-full xl:w-auto xl:max-w-[1450px]">
           <div className="glass-card px-6 py-4 rounded-3xl min-w-0">
             <p className="text-xs text-slate-400 uppercase tracking-widest mb-1 font-bold">Network Access</p>
             <div className="space-y-3">
@@ -475,6 +475,47 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
                         <span className="text-slate-600 w-8 text-right font-mono">{score.toFixed(0)}</span>
                       </div>
                     ))}
+                  </div>
+                )}
+             </div>
+          </div>
+          {/* ── LUXALGO SMC WIDGET ── */}
+          <div className="glass-card px-6 py-4 rounded-3xl min-w-0">
+             <div className="flex items-center justify-between mb-2">
+               <p className="text-xs text-slate-400 uppercase tracking-widest font-bold">SMC Logic</p>
+               <div className="flex items-center gap-1.5">
+                 <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_6px_rgba(34,211,238,0.8)]" />
+                 <span className="text-[9px] text-slate-500 uppercase tracking-widest font-bold">LUX</span>
+               </div>
+             </div>
+             <div className="space-y-2 mt-2 text-[10px]">
+                {localMarketData.smc_data && localMarketData.smc_data.premium_discount ? (
+                  <>
+                    <div className="flex justify-between items-center pb-1 border-b border-white/5">
+                      <span className="text-slate-500 uppercase">P/D Zone:</span>
+                      <span className="font-bold text-white tracking-wider truncate w-32 text-right">
+                        {localMarketData.smc_data.premium_discount.replace(/Premium|Discount/gi, (match) => {
+                          return match;
+                        })}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center pb-1 border-b border-white/5">
+                      <span className="text-slate-500 uppercase">Liquidity:</span>
+                      <span className="font-bold text-amber-400 tracking-wider truncate w-32 text-right" title={localMarketData.smc_data.liquidity_pools}>
+                        {localMarketData.smc_data.liquidity_pools?.split('~')[0] || 'None'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-500 uppercase">Structure:</span>
+                      <span className={`font-bold tracking-wider truncate w-32 text-right ${localMarketData.smc_data.market_structure?.includes('BULL') ? 'text-emerald-400' : localMarketData.smc_data.market_structure?.includes('BEAR') ? 'text-pink-400' : 'text-slate-300'}`}>
+                        {localMarketData.smc_data.market_structure || 'Ranging'}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-slate-500 flex items-center gap-2 h-full py-4 justify-center text-xs">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Analyzing Flow...</span>
                   </div>
                 )}
              </div>

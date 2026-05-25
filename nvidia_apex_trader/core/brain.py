@@ -46,6 +46,8 @@ try:
         "        config = yaml.safe_load(f)\n"
         "    if 'fallback_model' in config and config['fallback_model']['provider'] == 'lm_studio':\n"
         "        config['fallback_model']['base_url'] = f'http://{gateway_ip}:1234/v1'\n"
+        "        config['fallback_model']['model'] = 'local-model'\n"
+        "        config['fallback_model']['context_length'] = 128000\n"
         "        with open(config_path, 'w') as f:\n"
         "            yaml.dump(config, f, default_flow_style=False)\n"
         "except Exception as e: pass"
@@ -975,6 +977,7 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
     import asyncio
     
     prompt = payload["messages"][-1]["content"]
+    prompt += "\n\n[URGENT SYSTEM OVERRIDE]: You are running in a strict machine-to-machine JSON evaluation pipeline. YOU MUST OUTPUT ONLY VALID RAW JSON. Do NOT wrap your output in markdown code blocks. Do NOT output conversational text like 'I apologize'. Do NOT attempt to use any function calls or tool calls. Just output the final JSON dictionary directly."
     
     if broadcast_callback:
         asyncio.create_task(broadcast_callback({
