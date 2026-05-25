@@ -31,6 +31,28 @@ NVIDIA_API_KEY_3 = os.getenv("NVIDIA_API_KEY_3", "")
 NVIDIA_KEYS = [k for k in [NVIDIA_API_KEY, NVIDIA_API_KEY_2, NVIDIA_API_KEY_3] if k]
 print(f"[BRAIN] Loaded {len(NVIDIA_KEYS)} NVIDIA API key(s) for rotation")
 
+# Auto-update Hermes Agent config.yaml with WSL gateway IP so fallback model works
+try:
+    print("[BRAIN] Synchronizing Hermes Agent fallback IP...")
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+    subprocess.run([
+        "wsl", "--", "/home/hyper/.hermes/hermes-agent/venv/bin/python", "-c",
+        "import yaml, socket, subprocess\n"
+        "out = subprocess.check_output(['ip', 'route']).decode()\n"
+        "gateway_ip = [l.split()[2] for l in out.split('\\n') if l.startswith('default')][0]\n"
+        "config_path = '/home/hyper/.hermes/config.yaml'\n"
+        "try:\n"
+        "    with open(config_path, 'r') as f:\n"
+        "        config = yaml.safe_load(f)\n"
+        "    if 'fallback_model' in config and config['fallback_model']['provider'] == 'lm_studio':\n"
+        "        config['fallback_model']['base_url'] = f'http://{gateway_ip}:1234/v1'\n"
+        "        with open(config_path, 'w') as f:\n"
+        "            yaml.dump(config, f, default_flow_style=False)\n"
+        "except Exception as e: pass"
+    ], creationflags=creationflags, check=False)
+except Exception as e:
+    print(f"[BRAIN] Failed to sync Hermes fallback IP: {e}")
+
 # API Key rate limiting state dictionary
 api_key_states = {}
 
