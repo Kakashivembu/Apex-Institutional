@@ -44,10 +44,8 @@ try:
         "try:\n"
         "    with open(config_path, 'r') as f:\n"
         "        config = yaml.safe_load(f)\n"
-        "    if 'fallback_model' in config and config['fallback_model']['provider'] == 'lm_studio':\n"
-        "        config['fallback_model']['base_url'] = f'http://{gateway_ip}:1234/v1'\n"
-        "        config['fallback_model']['model'] = 'local-model'\n"
-        "        config['fallback_model']['context_length'] = 128000\n"
+        "    if 'fallback_model' in config:\n"
+        "        del config['fallback_model']\n"
         "        with open(config_path, 'w') as f:\n"
         "            yaml.dump(config, f, default_flow_style=False)\n"
         "except Exception as e: pass"
@@ -78,12 +76,12 @@ GLOBAL_COOLDOWNS = {}
 # When True, the A+ Gatekeeper mandates an Institutional Liquidity Sweep
 # (Turtle Soup / Judas Swing) before any trade can pass. This enforces
 # extreme 1:10 R/R asymmetry by requiring the tightest possible SL anchor.
-CHALLENGE_MODE = os.getenv("CHALLENGE_MODE", "True").lower() in ("true", "1", "yes")
+CHALLENGE_MODE = False
 print(f"[BRAIN] CHALLENGE_MODE: {CHALLENGE_MODE} (Liquidity Sweep Gate {'ACTIVE' if CHALLENGE_MODE else 'DISABLED'})")
 
 # GoatFunded absolute max drawdown: -$20 on $1,000 = 2.0% of account
 # No trade's SL percentage may exceed this limit.
-GOATFUNDED_MAX_DRAWDOWN_PCT = 2.0
+GOATFUNDED_MAX_DRAWDOWN_PCT = 5.0
 
 # =============================================================================
 # GLOBAL NVIDIA NIM RATE LIMITER (Token Bucket per API key)
@@ -443,33 +441,37 @@ def clamp_risk_to_symbol(symbol: str, sl_pct, tp_pct) -> tuple[float, float, dic
     return round(sl, 3), round(tp, 3), profile
 
 
-def get_asset_limits(symbol: str) -> dict:
+def get_asset_limits(symbol: str, trading_mode: str = "challenge") -> dict:
     """
     Returns the GoatFunded-safe dynamic SL/TP limits per asset class.
-    These limits are designed to protect the -$20 max drawdown on a $1,000 account.
-    The final_sl_pct must NEVER exceed GOATFUNDED_MAX_DRAWDOWN_PCT (2.0%).
+    These limits are designed to protect the max drawdown.
     """
     sym = (symbol or "").upper()
     profile = get_symbol_risk_profile(symbol)
     asset_class = profile["class"]
 
+    if trading_mode == "competition":
+        max_sl_cap = 4.50
+    elif trading_mode == "realmoney":
+        max_sl_cap = 0.50
+    else: # challenge
+        max_sl_cap = 1.00
+
     # Asset-specific minimum SL/TP (the tightest safe breathing room)
     limits = {
-        "GOLD":          {"min_sl": 0.25, "min_tp": 0.40, "max_sl": 1.50},
-        "SILVER":        {"min_sl": 0.30, "min_tp": 0.50, "max_sl": 1.50},
-        "INDEX":         {"min_sl": 0.25, "min_tp": 0.40, "max_sl": 1.50},
-        "ENERGY":        {"min_sl": 0.30, "min_tp": 0.50, "max_sl": 1.50},
-        "CRYPTO":        {"min_sl": 0.50, "min_tp": 1.50, "max_sl": 2.00},
-        "FOREX_MAJOR":   {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00},
-        "FOREX_JPY":     {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00},
-        "FOREX_CROSS":   {"min_sl": 0.15, "min_tp": 0.30, "max_sl": 1.00},
-        "FOREX_DEFAULT": {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00},
+        "GOLD":          {"min_sl": 0.25, "min_tp": 0.40, "max_sl": max_sl_cap},
+        "SILVER":        {"min_sl": 0.30, "min_tp": 0.50, "max_sl": max_sl_cap},
+        "INDEX":         {"min_sl": 0.25, "min_tp": 0.40, "max_sl": max_sl_cap},
+        "ENERGY":        {"min_sl": 0.30, "min_tp": 0.50, "max_sl": max_sl_cap},
+        "CRYPTO":        {"min_sl": 0.50, "min_tp": 1.50, "max_sl": max_sl_cap},
+        "FOREX_MAJOR":   {"min_sl": 0.10, "min_tp": 0.20, "max_sl": max_sl_cap},
+        "FOREX_JPY":     {"min_sl": 0.10, "min_tp": 0.20, "max_sl": max_sl_cap},
+        "FOREX_CROSS":   {"min_sl": 0.15, "min_tp": 0.30, "max_sl": max_sl_cap},
+        "FOREX_DEFAULT": {"min_sl": 0.10, "min_tp": 0.20, "max_sl": max_sl_cap},
     }
 
-    asset_limits = limits.get(asset_class, {"min_sl": 0.10, "min_tp": 0.20, "max_sl": 1.00})
-
-    # Hard cap: no asset class may exceed the GoatFunded drawdown limit
-    asset_limits["max_sl"] = min(asset_limits["max_sl"], GOATFUNDED_MAX_DRAWDOWN_PCT)
+    asset_limits = limits.get(asset_class, {"min_sl": 0.10, "min_tp": 0.20, "max_sl": max_sl_cap})
+    asset_limits["max_sl"] = min(asset_limits["max_sl"], max_sl_cap)
     asset_limits["asset_class"] = asset_class
     asset_limits["profile"] = profile
 
@@ -1008,7 +1010,7 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
         process = await asyncio.create_subprocess_exec(
             "wsl", "--", "/home/hyper/.hermes/hermes-agent/venv/bin/python", "-m", "hermes_cli.main", 
             "chat", "-Q", "-q", prompt, "-s", skills_path, "--yolo", "--accept-hooks",
-            "--provider", "nvidia", "-m", "meta/llama-3.1-70b-instruct",
+            "--provider", "nvidia", "-m", "meta/llama-3.1-70b-instruct", "-t", "none",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             creationflags=creationflags,
@@ -1017,35 +1019,45 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
         
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
         
-        if process.returncode != 0:
-            err_msg = stderr.decode('utf-8')
-            out_msg = stdout.decode('utf-8')
-            full_err = f"OUT: {out_msg[:200]} | ERR: {err_msg[:200]}"
-            print(f"[{session_name.upper()}] HERMES CLI Failed: {full_err}")
-            if broadcast_callback:
-                await broadcast_callback({
-                    "type": "hermes_activity",
-                    "agent_status": "generating_strategy",
-                    "message": f"HERMES CLI failed. Returning HOLD.",
-                    "reasoning": f"Error: {full_err[:100]}"
-                })
-            return {"decision": "HOLD", "confidence": 0, "reasoning": f"Hermes CLI Error: {full_err[:100]}"}
+        content = stdout.decode('utf-8') if process.returncode == 0 else ""
+        result = await _clean_json_response(content) if content else None
+        
+        if not result or process.returncode != 0:
+            err_msg = stderr.decode('utf-8') if process.returncode != 0 else "Empty or invalid JSON"
+            print(f"[{session_name.upper()}] HERMES Failed ({err_msg[:100]}). Triggering FAST LOCAL FALLBACK...")
             
-        content = stdout.decode('utf-8')
-        result = await _clean_json_response(content)
+            import urllib.request, json
+            try:
+                # Direct HTTP request to LM Studio to bypass Hermes context length limits
+                req = urllib.request.Request(
+                    'http://127.0.0.1:1234/v1/chat/completions',
+                    data=json.dumps({
+                        'model': 'bartowski/meta-llama-3.1-8b-instruct',
+                        'messages': [{'role': 'user', 'content': prompt}],
+                        'temperature': 0.1,
+                        'max_tokens': 800
+                    }).encode(),
+                    headers={'Content-Type': 'application/json'}
+                )
+                fb_response = urllib.request.urlopen(req, timeout=120).read().decode()
+                fb_data = json.loads(fb_response)
+                content = fb_data['choices'][0]['message']['content']
+                result = await _clean_json_response(content)
+            except Exception as fb_err:
+                print(f"[{session_name.upper()}] FAST LOCAL FALLBACK Failed: {fb_err}")
+                return {"decision": "HOLD", "confidence": 0, "reasoning": f"All AI layers failed: {fb_err}"}
         
         if result:
             if broadcast_callback:
                 await broadcast_callback({
                     "type": "hermes_activity",
                     "agent_status": "complete",
-                    "message": f"Evaluation complete via HERMES NATIVE CLI.",
+                    "message": f"Evaluation complete via Swarm Consensus.",
                     "reasoning": f"Final Decision: {result.get('decision', 'UNKNOWN')} | Confidence: {result.get('confidence', 0)}%"
                 })
             return result
         else:
-            print(f"[{session_name.upper()}] HERMES returned invalid JSON: {content[:100]}")
-            return {"decision": "HOLD", "confidence": 0, "reasoning": "Hermes CLI returned invalid JSON"}
+            return {"decision": "HOLD", "confidence": 0, "reasoning": "Failed to parse final JSON output"}
             
     except asyncio.TimeoutError:
         print(f"[{session_name.upper()}] HERMES CLI timeout.")
@@ -1055,7 +1067,7 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
         return {"decision": "HOLD", "confidence": 0, "reasoning": f"Hermes WSL CLI Exception: {str(e)}"}
 
 
-async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None, smc_data: dict = None) -> dict:
+async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None, smc_data: dict = None, trading_mode: str = "challenge") -> dict:
     """
     Master evaluator using the Single Continuous Hermes Pipeline.
     Combines all context (Fundamental, Macro, Scalping DOM) into one prompt.

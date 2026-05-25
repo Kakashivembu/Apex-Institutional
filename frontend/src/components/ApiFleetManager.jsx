@@ -209,6 +209,44 @@ const ApiFleetManager = ({ wsConnected }) => {
     }
   };
 
+  const handleLogin = async (accountName) => {
+    try {
+      setSuccess(`Attempting to login to MT5 as ${accountName}...`);
+      const response = await fetch(`${API_BASE_URL}/api/mt5/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_name: accountName })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccess(data.message);
+      } else {
+        setError(data.error || 'Failed to login to MT5');
+      }
+    } catch (err) {
+      setError('Failed to connect to server');
+    }
+  };
+
+  const handleUpdateMode = async (accountName, newMode) => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/keys/mode`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account_name: accountName, mode: newMode })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccess(`Account "${accountName}" mode updated to ${newMode.toUpperCase()}`);
+        fetchKeys();
+      } else {
+        setError(data.error || 'Failed to update trading mode');
+      }
+    } catch (err) {
+      setError('Failed to connect to server');
+    }
+  };
+
   const handleAiSubmit = async (role) => {
     if (!newAiKey) return;
     setAiSubmitting(true);
@@ -331,10 +369,27 @@ const ApiFleetManager = ({ wsConnected }) => {
                 <div className="flex items-center space-x-2">
                   <span className="font-semibold text-white text-sm">{key.account_name}</span>
                   <span className="text-[9px] bg-white/10 px-2 py-0.5 rounded-full text-slate-400 uppercase">{key.network}</span>
+                  
+                  <select 
+                    value={key.trading_mode || 'challenge'}
+                    onChange={(e) => handleUpdateMode(key.account_name, e.target.value)}
+                    className="ml-2 bg-black/40 border border-white/10 rounded-lg py-0.5 px-2 text-[10px] text-white focus:border-cyan-500/50 outline-none uppercase tracking-wide"
+                  >
+                    <option value="challenge" className="bg-slate-900 text-white">Challenge</option>
+                    <option value="realmoney" className="bg-slate-900 text-white">Real Money</option>
+                    <option value="competition" className="bg-slate-900 text-white">Competition</option>
+                  </select>
                 </div>
                 <div className="text-xs font-mono text-slate-500 mt-1">Key: {key.api_key?.substring(0, 10)}...</div>
               </div>
-              <button onClick={() => handleDelete(key.account_name)} className="p-2 text-rose-400 hover:bg-rose-400/10 rounded-lg transition-colors"><Trash2 className="w-4 h-4" /></button>
+              <div className="flex items-center space-x-2">
+                <button onClick={() => handleLogin(key.account_name)} className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/20 rounded-lg transition-colors">
+                  Login to MT5
+                </button>
+                <button onClick={() => handleDelete(key.account_name)} className="p-2 text-rose-400 hover:bg-rose-400/10 rounded-lg transition-colors" title="Delete Account">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           ))}
         </div>

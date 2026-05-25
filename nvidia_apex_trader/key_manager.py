@@ -26,11 +26,16 @@ def init_db():
             api_secret TEXT NOT NULL,
             network TEXT DEFAULT 'testnet',
             status TEXT DEFAULT 'active',
+            trading_mode TEXT DEFAULT 'challenge',
             created_at TEXT NOT NULL
         )
     """)
 
     columns = {row[1] for row in cursor.execute("PRAGMA table_info(api_keys)").fetchall()}
+    if "trading_mode" not in columns:
+        cursor.execute("ALTER TABLE api_keys ADD COLUMN trading_mode TEXT DEFAULT 'challenge'")
+        print("[KEY_MANAGER] Migrated api_keys: added trading_mode column")
+
     if "exchange" in columns:
         try:
             cursor.execute("ALTER TABLE api_keys DROP COLUMN exchange")
@@ -43,12 +48,13 @@ def init_db():
                     api_secret TEXT NOT NULL,
                     network TEXT DEFAULT 'testnet',
                     status TEXT DEFAULT 'active',
+                    trading_mode TEXT DEFAULT 'challenge',
                     created_at TEXT NOT NULL
                 )
             """)
             cursor.execute("""
-                INSERT INTO api_keys_new (id, account_name, api_key, api_secret, network, status, created_at)
-                SELECT id, account_name, api_key, api_secret, network, status, created_at
+                INSERT INTO api_keys_new (id, account_name, api_key, api_secret, network, status, trading_mode, created_at)
+                SELECT id, account_name, api_key, api_secret, network, status, 'challenge', created_at
                 FROM api_keys
             """)
             cursor.execute("DROP TABLE api_keys")
@@ -116,7 +122,7 @@ def init_db():
     conn.close()
     print(f"[KEY_MANAGER] Database initialized at: {DB_PATH}")
 
-def add_key(account_name: str, api_key: str, api_secret: str, network: str = "testnet") -> Dict:
+def add_key(account_name: str, api_key: str, api_secret: str, network: str = "testnet", trading_mode: str = "challenge") -> Dict:
     """Add a new API key to database"""
     conn = get_connection()
     cursor = conn.cursor()
@@ -125,9 +131,9 @@ def add_key(account_name: str, api_key: str, api_secret: str, network: str = "te
     
     try:
         cursor.execute("""
-            INSERT INTO api_keys (account_name, api_key, api_secret, network, status, created_at)
-            VALUES (?, ?, ?, ?, 'active', ?)
-        """, (account_name, api_key, api_secret, network, created_at))
+            INSERT INTO api_keys (account_name, api_key, api_secret, network, status, trading_mode, created_at)
+            VALUES (?, ?, ?, ?, 'active', ?, ?)
+        """, (account_name, api_key, api_secret, network, trading_mode, created_at))
         conn.commit()
         
         new_key = {
@@ -137,6 +143,7 @@ def add_key(account_name: str, api_key: str, api_secret: str, network: str = "te
             "api_secret": api_secret,
             "network": network,
             "status": "active",
+            "trading_mode": trading_mode,
             "created_at": created_at
         }
     except sqlite3.IntegrityError:
@@ -164,6 +171,7 @@ def get_all_keys() -> List[Dict]:
             "api_secret": row["api_secret"],
             "network": row["network"],
             "status": row["status"],
+            "trading_mode": row["trading_mode"],
             "created_at": row["created_at"]
         })
     
@@ -186,6 +194,7 @@ def get_active_keys() -> List[Dict]:
             "api_secret": row["api_secret"],
             "network": row["network"],
             "status": row["status"],
+            "trading_mode": row["trading_mode"],
             "created_at": row["created_at"]
         })
     
@@ -217,9 +226,20 @@ def get_key_by_account(account_name: str) -> Optional[Dict]:
             "api_secret": row["api_secret"],
             "network": row["network"],
             "status": row["status"],
+            "trading_mode": row["trading_mode"],
             "created_at": row["created_at"]
         }
     return None
+
+def update_trading_mode(account_name: str, mode: str) -> bool:
+    """Update the trading mode for a specific account"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE api_keys SET trading_mode = ? WHERE account_name = ?", (mode, account_name))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 def get_all_account_names(active_only: bool = False) -> List[str]:
     """Return configured account names, optionally only active ones."""

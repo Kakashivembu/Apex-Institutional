@@ -75,13 +75,11 @@ from core.mt5_engine import (
 BROKER_SYMBOL_MAPS = {
     "xmglobal": [
         "BTCUSD#", "GOLD.i#",
-        "EURUSD#", "GBPUSD#", "USDJPY#", "AUDUSD#", "USDCAD#", "USDCHF#", "NZDUSD#",
-        "GBPJPY#", "EURGBP#", "AUDJPY#", "NZDJPY#"
+        "GBPJPY#", "US30Cash#", "US100Cash#"
     ],
     "goatfunded": [
         "BTCUSD.x", "XAUUSD.x",
-        "EURUSD.x", "GBPUSD.x", "USDJPY.x", "AUDUSD.x", "USDCAD.x", "USDCHF.x", "NZDUSD.x",
-        "GBPJPY.x", "EURGBP.x", "AUDJPY.x", "NZDJPY.x"
+        "GBPJPY.x", "US30.x", "NAS100.x"
     ],
 }
 
@@ -577,6 +575,19 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
     
     active_keys = key_manager.get_active_keys()
     
+    # Filter active_keys to ONLY the currently logged-in MT5 account
+    current_trading_mode = "challenge"  # default
+    try:
+        import MetaTrader5 as mt5
+        acc_info = await asyncio.to_thread(mt5.account_info)
+        if acc_info:
+            curr_login = str(acc_info.login)
+            active_keys = [k for k in active_keys if str(k.get("api_key", "")) == curr_login]
+            if active_keys:
+                current_trading_mode = active_keys[0].get("trading_mode", "challenge")
+    except Exception as e:
+        print(f"[SERVER] Error checking MT5 login: {e}")
+
     all_positions = []
     total_equity = 0
     total_available_margin = 0.0
@@ -876,7 +887,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             active_symbol=symbol,
             live_asset_price=live_market_price,
             broadcast_callback=manager.broadcast,
-            smc_data=last_smc_data.get(symbol, {})
+            smc_data=last_smc_data.get(symbol, {}),
+            trading_mode=current_trading_mode
         )
         
         # Track NVIDIA NIM API usage (3 calls per consensus: CLAW + Macro + Scalper)
@@ -898,31 +910,30 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 "name": "Hermes Institutional Agent",
                 "decision": action,
                 "confidence": result.get("confidence", 50),
-                "signal": f"Entry: ${result.get('entry_price', live_market_price):,.2f}",
+                "signal": f"Entry: ${(result.get('entry_price') or live_market_price or 0.0):,.2f}",
                 "status": "strong"
             }
         ]
         
         # ============================================================
-        # DYNAMIC RISK CLAMPING (GoatFunded Challenge-Safe)
+        # DYNAMIC RISK CLAMPING
         # Uses get_asset_limits() per asset class instead of static UI multipliers.
-        # In CHALLENGE_MODE, the AI's sweep-derived SL anchor is used.
         # ============================================================
-        from core.brain import get_asset_limits, CHALLENGE_MODE, GOATFUNDED_MAX_DRAWDOWN_PCT
-        asset_limits = get_asset_limits(symbol)
+        from core.brain import get_asset_limits, GOATFUNDED_MAX_DRAWDOWN_PCT
+        asset_limits = get_asset_limits(symbol, current_trading_mode)
         _asset_class = asset_limits["asset_class"]
         
         params = _load_params_from_disk()
         ui_sl = float(params.get("base_stop_loss_pct", 0.12))
         ui_tp = float(params.get("base_take_profit_pct", 0.25))
         
-        if CHALLENGE_MODE:
-            # In CHALLENGE_MODE: Use the AI's calculated SL/TP from the sweep anchor,
+        if current_trading_mode in ["challenge", "realmoney"]:
+            # In safe modes: Use the AI's calculated SL/TP from the sweep anchor,
             # clamped within the asset's safe limits. Ignore frontend dashboard defaults.
             ai_sl = result.get("stop_loss_pct", asset_limits["min_sl"])
             ai_tp = result.get("take_profit_pct", asset_limits["min_tp"])
             
-            # Clamp: floor at asset min, ceiling at GoatFunded max drawdown
+            # Clamp: floor at asset min, ceiling at mode max drawdown
             clamped_sl = round(max(asset_limits["min_sl"], min(float(ai_sl), asset_limits["max_sl"])), 3)
             clamped_tp = round(max(asset_limits["min_tp"], float(ai_tp)), 3)
             
@@ -930,10 +941,10 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             if clamped_tp < clamped_sl * 2.0:
                 clamped_tp = round(clamped_sl * 2.0, 3)
             
-            print(f"[RISK-MANAGER] Dynamic Risk Clamping Active: {_asset_class} | "
-                  f"CHALLENGE_MODE SL: {clamped_sl}% (limit: {asset_limits['max_sl']}%) | TP: {clamped_tp}%")
+            print(f"[RISK-MANAGER] Dynamic Risk Clamping Active ({current_trading_mode.upper()}): {_asset_class} | "
+                  f"SL: {clamped_sl}% (limit: {asset_limits['max_sl']}%) | TP: {clamped_tp}%")
         else:
-            # Standard mode: Use UI params clamped within asset-safe limits
+            # Competition mode: Use highly aggressive limits
             clamped_sl = round(max(asset_limits["min_sl"], min(ui_sl, asset_limits["max_sl"])), 3)
             clamped_tp = round(max(asset_limits["min_tp"], ui_tp), 3)
             
@@ -941,7 +952,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             if clamped_tp < clamped_sl * 1.5:
                 clamped_tp = round(clamped_sl * 1.5, 3)
             
-            print(f"[RISK-MANAGER] Dynamic Risk Clamping Active: {_asset_class} | "
+            print(f"[RISK-MANAGER] Dynamic Risk Clamping Active ({current_trading_mode.upper()}): {_asset_class} | "
                   f"UI SL: {ui_sl}% -> Clamped: {clamped_sl}% (limit: {asset_limits['max_sl']}%) | TP: {clamped_tp}%")
 
         last_consensus = {
@@ -975,7 +986,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             from core.macro_sensors import get_early_trend_continuation
             early_dir = "BUY" if action == "LONG" else "SELL"
             early_entry = get_early_trend_continuation(symbol, early_dir)
-            min_consensus = 64 if early_entry.get("pass") else 72
+            min_consensus = 64 if early_entry.get("pass") else 70
             if consensus_strength < min_consensus:
                 print(f"[GATE-1] BLOCKED: Consensus {consensus_strength}% < {min_consensus}% threshold. Signal: {action} | Early={early_entry.get('reason')}")
                 entry_blocked = True
@@ -1028,6 +1039,13 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         elif action == "SHORT":
             is_momentum_breakout = velocity_ratio >= 1.25 and score_5m <= -15 and score_15m <= -5
 
+        # Define Consensus Threshold dynamically based on mode
+        consensus_threshold = 70
+        if current_trading_mode == "competition":
+            consensus_threshold = 60
+        elif current_trading_mode == "realmoney":
+            consensus_threshold = 75
+
         # --- GATE 3: HTF Trend Filter (FIX #2) — H1 EMA20 vs EMA50 ---
         h1_bias = ""
         if not entry_blocked:
@@ -1038,6 +1056,9 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             
             if not htf_allows and is_momentum_breakout:
                 print(f"[GATE-3] BYPASS: Session Open Momentum Breakout detected (Vel: {velocity_ratio:.2f}x, 5m: {score_5m:+d}). Overriding H1 bias={h1_bias}.")
+                htf_allows = True
+            elif not htf_allows and consensus_strength >= consensus_threshold:
+                print(f"[GATE-3] BYPASS: Strong AI Consensus ({consensus_strength}% >= {consensus_threshold}%). Trusting AI over H1 bias={h1_bias}.")
                 htf_allows = True
 
             if not htf_allows:
@@ -1073,6 +1094,10 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
 
             if is_momentum_breakout:
                 print(f"[GATE-5b] BYPASS: Momentum Breakout detected. Bypassing slow 1H MTF alignment.")
+                score_ok = True
+                mtf_aligned = True
+            elif consensus_strength >= consensus_threshold:
+                print(f"[GATE-5b] BYPASS: Strong AI Consensus ({consensus_strength}% >= {consensus_threshold}%). Trusting AI Swarm.")
                 score_ok = True
                 mtf_aligned = True
 
@@ -1150,6 +1175,16 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             stack_direction_lock[symbol] = action
             
             active_keys = key_manager.get_active_keys()
+            
+            # Only execute on the currently logged in MT5 account to prevent dual execution on the same terminal
+            import MetaTrader5 as mt5
+            acc_info = await asyncio.to_thread(mt5.account_info)
+            if acc_info:
+                curr_login = str(acc_info.login)
+                active_keys = [k for k in active_keys if str(k.get("api_key", "")) == curr_login]
+            else:
+                active_keys = []
+
             if active_keys:
                 stop_loss_pct = clamped_sl
                 take_profit_pct = clamped_tp
@@ -1185,6 +1220,10 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         acct_equity = account_info.equity
                         if acct_equity <= 0:
                             print(f"[TRADE:{t_account}] Skipping: No equity (${acct_equity})")
+                            return
+                            
+                        if current_trading_mode == "challenge" and acct_equity < 983.00:
+                            print(f"[ACCOUNT SHIELD] DANGER: Equity ${acct_equity:.2f} is dangerously close to $980 blowout. HALTING TRADING to protect Challenge account.")
                             return
                             
                         margin_free = account_info.margin_free
@@ -2010,92 +2049,78 @@ async def predictive_trap_loop():
                 }
                 
                 try:
-                    from core.brain import fetch_nvidia_sync
-                    response = await asyncio.to_thread(
-                        fetch_nvidia_sync,
-                        "https://integrate.api.nvidia.com/v1/chat/completions",
-                        headers, payload
-                    )
+                    from core.brain import call_lm_studio_direct
+                    full_prompt = f"{system_prompt}\n\n{prompt}"
+                    trap_data = await call_lm_studio_direct(full_prompt)
                     
-                    record_nvidia_call()  # Track API usage
+                    if "predicted_trigger_price" not in trap_data:
+                        print(f"  [AI-TRAP] Failed to get valid trap prices from LM Studio: {trap_data}")
+                        continue
+                        
+                    trigger = float(trap_data.get("predicted_trigger_price", 0))
+                    protective_sl = float(trap_data.get("protective_sl_price", 0))
+                    reasoning = trap_data.get("reasoning", "N/A")
                     
-                    if response.status_code == 200:
-                        data = response.json()
-                        content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-                        
-                        # Robust JSON parsing with regex fallback
-                        from core.brain import robust_json_parse
-                        trap_data = robust_json_parse(content)
-                        if not trap_data:
-                            print(f"  [AI-TRAP] Failed to parse JSON: {content[:200]}")
-                            continue
-                        
-                        trigger = float(trap_data.get("predicted_trigger_price", 0))
-                        protective_sl = float(trap_data.get("protective_sl_price", 0))
-                        reasoning = trap_data.get("reasoning", "N/A")
-                        
-                        if trigger <= 0 or protective_sl <= 0:
-                            print(f"  [AI-TRAP] Invalid prices: trigger=${trigger}, sl=${protective_sl}")
-                            continue
-                        
-                        # GUARDRAIL 1: TP Boundary Clamp â€” trigger must be BETWEEN current price and TP
-                        if tp_price > 0:
-                            if side == "short" and trigger <= tp_price:
-                                old_trigger = trigger
-                                trigger = tp_price + (current_price - tp_price) * 0.15  # 15% above TP
-                                print(f"  [AI-TRAP] CLAMPED: Short trigger {old_trigger:.{digits}f} was below TP {tp_price:.{digits}f} -> adjusted to {trigger:.{digits}f} (front-running TP)")
-                            elif side == "long" and trigger >= tp_price:
-                                old_trigger = trigger
-                                trigger = tp_price - (tp_price - current_price) * 0.15  # 15% below TP
-                                print(f"  [AI-TRAP] CLAMPED: Long trigger {old_trigger:.{digits}f} was above TP {tp_price:.{digits}f} -> adjusted to {trigger:.{digits}f} (front-running TP)")
-                        
-                        # GUARDRAIL 2: Reject SL that INCREASES loss exposure beyond current SL
-                        # For LONG: new SL below current_sl = worse protection (rejected)
-                        # For SHORT: new SL above current_sl = worse protection (rejected)
-                        # NOTE: SL past entry is VALID for profit-locking â€” do NOT reject it
-                        sl_worse_than_current = False
-                        if side == "long" and protective_sl < current_sl:
-                            sl_worse_than_current = True
-                            print(f"  [AI-TRAP] REJECTED: LONG protective SL {protective_sl:.{digits}f} is BELOW current SL {current_sl:.{digits}f} (would loosen protection)")
-                            continue
-                        elif side == "short" and protective_sl > current_sl:
-                            sl_worse_than_current = True
-                            print(f"  [AI-TRAP] REJECTED: SHORT protective SL {protective_sl:.{digits}f} is ABOVE current SL {current_sl:.{digits}f} (would loosen protection)")
-                            continue
-                        
-                        # GUARDRAIL 3: Validate trap direction against execution semantics.
-                        # LONG traps fire when price rises into trigger; SHORT traps fire when price falls into trigger.
-                        valid_trap = False
-                        if side == "long":
-                            valid_trap = trigger >= current_price and protective_sl > current_sl and protective_sl < trigger
-                        elif side == "short":
-                            valid_trap = trigger <= current_price and protective_sl < current_sl and protective_sl > trigger
-                        
-                        if not valid_trap:
-                            print(f"  [AI-TRAP] REJECTED: Trap direction invalid for {side.upper()}")
-                            print(f"  Trigger: {trigger:.{digits}f} (current: {current_price:.{digits}f}) | Need: {'trigger >= current' if side == 'long' else 'trigger <= current'}")
-                            print(f"  Protective SL: {protective_sl:.{digits}f} (current SL: {current_sl:.{digits}f}) | Need: {'current_sl < SL < trigger' if side == 'long' else 'trigger < SL < current_sl'}")
-                            continue
-                        
-                        # Store the trap
-                        ai_predictive_traps[trail_key] = {
-                            "predicted_trigger_price": trigger,
-                            "protective_sl_price": protective_sl,
-                            "reasoning": reasoning,
-                            "side": side,
-                            "set_at": time.time(),
-                            "set_price": current_price,
-                            "ref_price": current_price,  # Reference price for movement gating
-                            "account": account,
-                            "executed": False,
-                            "expires_at": time.time() + 900  # 15-minute trap TTL
-                        }
-                        
-                        print(f"  [AI-TRAP] SET for {trail_key}: If price hits {trigger:.{digits}f}, SL snaps to {protective_sl:.{digits}f}")
-                        print(f"  [AI-TRAP] Reasoning: {reasoning[:150]}")
-                        save_flight_state(step_trail_state, ai_predictive_traps, force=True)  # FLIGHT-RECORDER: persist new AI trap
-                    else:
-                        print(f"  [AI-TRAP] NIM HTTP {response.status_code}: {response.text[:150]}")
+                    if trigger <= 0 or protective_sl <= 0:
+                        print(f"  [AI-TRAP] Invalid prices: trigger=${trigger}, sl=${protective_sl}")
+                        continue
+                    
+                    # GUARDRAIL 1: TP Boundary Clamp â€” trigger must be BETWEEN current price and TP
+                    if tp_price > 0:
+                        if side == "short" and trigger <= tp_price:
+                            old_trigger = trigger
+                            trigger = tp_price + (current_price - tp_price) * 0.15  # 15% above TP
+                            print(f"  [AI-TRAP] CLAMPED: Short trigger {old_trigger:.{digits}f} was below TP {tp_price:.{digits}f} -> adjusted to {trigger:.{digits}f} (front-running TP)")
+                        elif side == "long" and trigger >= tp_price:
+                            old_trigger = trigger
+                            trigger = tp_price - (tp_price - current_price) * 0.15  # 15% below TP
+                            print(f"  [AI-TRAP] CLAMPED: Long trigger {old_trigger:.{digits}f} was above TP {tp_price:.{digits}f} -> adjusted to {trigger:.{digits}f} (front-running TP)")
+                    
+                    # GUARDRAIL 2: Reject SL that INCREASES loss exposure beyond current SL
+                    # For LONG: new SL below current_sl = worse protection (rejected)
+                    # For SHORT: new SL above current_sl = worse protection (rejected)
+                    # NOTE: SL past entry is VALID for profit-locking â€” do NOT reject it
+                    sl_worse_than_current = False
+                    if side == "long" and protective_sl < current_sl:
+                        sl_worse_than_current = True
+                        print(f"  [AI-TRAP] REJECTED: LONG protective SL {protective_sl:.{digits}f} is BELOW current SL {current_sl:.{digits}f} (would loosen protection)")
+                        continue
+                    elif side == "short" and protective_sl > current_sl:
+                        sl_worse_than_current = True
+                        print(f"  [AI-TRAP] REJECTED: SHORT protective SL {protective_sl:.{digits}f} is ABOVE current SL {current_sl:.{digits}f} (would loosen protection)")
+                        continue
+                    
+                    # GUARDRAIL 3: Validate trap direction against execution semantics.
+                    # LONG traps fire when price rises into trigger; SHORT traps fire when price falls into trigger.
+                    valid_trap = False
+                    if side == "long":
+                        valid_trap = trigger >= current_price and protective_sl > current_sl and protective_sl < trigger
+                    elif side == "short":
+                        valid_trap = trigger <= current_price and protective_sl < current_sl and protective_sl > trigger
+                    
+                    if not valid_trap:
+                        print(f"  [AI-TRAP] REJECTED: Trap direction invalid for {side.upper()}")
+                        print(f"  Trigger: {trigger:.{digits}f} (current: {current_price:.{digits}f}) | Need: {'trigger >= current' if side == 'long' else 'trigger <= current'}")
+                        print(f"  Protective SL: {protective_sl:.{digits}f} (current SL: {current_sl:.{digits}f}) | Need: {'current_sl < SL < trigger' if side == 'long' else 'trigger < SL < current_sl'}")
+                        continue
+                    
+                    # Store the trap
+                    ai_predictive_traps[trail_key] = {
+                        "predicted_trigger_price": trigger,
+                        "protective_sl_price": protective_sl,
+                        "reasoning": reasoning,
+                        "side": side,
+                        "set_at": time.time(),
+                        "set_price": current_price,
+                        "ref_price": current_price,  # Reference price for movement gating
+                        "account": account,
+                        "executed": False,
+                        "expires_at": time.time() + 900  # 15-minute trap TTL
+                    }
+                    
+                    print(f"  [AI-TRAP] SET for {trail_key}: If price hits {trigger:.{digits}f}, SL snaps to {protective_sl:.{digits}f}")
+                    print(f"  [AI-TRAP] Reasoning: {reasoning[:150]}")
+                    save_flight_state(step_trail_state, ai_predictive_traps, force=True)  # FLIGHT-RECORDER: persist new AI trap
                 
                 except Exception as trap_err:
                     print(f"  [AI-TRAP] Error for {symbol}: {trap_err}")
@@ -2249,6 +2274,7 @@ async def market_data_loop():
             account_info = await asyncio.to_thread(mt5.account_info)
             current_equity = account_info.equity if account_info else 0.0
             current_balance = account_info.balance if account_info else 0.0
+            account_login = str(account_info.login) if account_info else "default"
             
             if current_equity > 0:
                 last_equity["total"] = current_equity
@@ -2257,7 +2283,13 @@ async def market_data_loop():
             circuit_result = {"active": False, "drawdown_pct": 0.0, "reason": "", "time_until_reset": ""}
             
             if current_equity > 0:
-                circuit_result = check_circuit_breaker(current_balance, current_equity)
+                current_trading_mode = "challenge"
+                if account_info:
+                    acc_keys = [k for k in active_keys if str(k.get("api_key", "")) == account_login]
+                    if acc_keys:
+                        current_trading_mode = acc_keys[0].get("trading_mode", "challenge")
+                        
+                circuit_result = check_circuit_breaker(current_balance, current_equity, account_login, current_trading_mode)
                 circuit_breaker_active = circuit_result["active"]
                 if circuit_breaker_active:
                     print(f"\n{'='*70}")
@@ -2929,6 +2961,42 @@ async def delete_api_key(account_name: str = None):
         key_manager.delete_key(account_name)
     return {"success": True}
 
+@app.post("/api/keys/mode")
+async def update_account_mode(request: Request):
+    data = await request.json()
+    account_name = data.get("account_name")
+    mode = data.get("mode")
+    if not account_name or not mode:
+        return {"success": False, "error": "account_name and mode are required"}
+    
+    success = key_manager.update_trading_mode(account_name, mode)
+    return {"success": success}
+
+@app.post("/api/mt5/login")
+async def mt5_login_endpoint(request: Request):
+    data = await request.json()
+    account_name = data.get("account_name")
+    if not account_name:
+        return {"success": False, "error": "account_name required"}
+        
+    keys = key_manager.get_active_keys()
+    target_key = next((k for k in keys if k.get("account_name") == account_name), None)
+    if not target_key:
+        return {"success": False, "error": f"Account {account_name} not found"}
+        
+    import MetaTrader5 as mt5
+    import asyncio
+    account_id = int(target_key.get("api_key", "0"))
+    password = target_key.get("api_secret", "")
+    server = target_key.get("network", "")
+    
+    login_ok = await asyncio.to_thread(mt5.login, account_id, password, server)
+    if login_ok:
+        return {"success": True, "message": f"Successfully logged into MT5 as {account_name}"}
+    else:
+        err = mt5.last_error()
+        return {"success": False, "error": f"MT5 Login failed. Error: {err}"}
+
 # ============================================================
 # AI KEYS MANAGEMENT ENDPOINTS
 # ============================================================
@@ -3263,9 +3331,24 @@ async def get_claw_intelligence():
     
 # Scrape fresh news and analyze
     try:
-        from core.brain import get_market_sentiment
-        result = await get_market_sentiment(NVIDIA_API_KEY_3)
-
+        from core.brain import call_lm_studio_direct
+        prompt = """Analyze the current macro crypto and forex market sentiment based on recent price action. 
+Return strictly valid JSON in this exact format:
+{
+  "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
+  "confidence": 85,
+  "bullish_pct": 40,
+  "bearish_pct": 40,
+  "neutral_pct": 20,
+  "report": "Brief market analysis summary",
+  "liquidity_data": "Liquidity analysis",
+  "squeeze_risk": "LOW" | "MEDIUM" | "HIGH",
+  "dominant_side": "BUY" | "SELL" | "BALANCED"
+}"""
+        result = await call_lm_studio_direct(prompt)
+        if not result or "sentiment" not in result:
+            result = {"sentiment": "NEUTRAL", "confidence": 50, "bullish_pct": 33, "bearish_pct": 33, "neutral_pct": 34, "report": "Fallback local analysis.", "liquidity_data": "Unavailable", "squeeze_risk": "MEDIUM", "dominant_side": "BALANCED"}
+        
         claw_data = {
             "sentiment": result.get("sentiment", "NEUTRAL"),
             "confidence": result.get("confidence", 50),

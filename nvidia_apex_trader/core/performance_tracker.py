@@ -11,7 +11,7 @@ from datetime import datetime, date
 # KELLY CRITERION POSITION SIZING
 # ============================================================
 
-def kelly_position_size(confidence_pct: float, rr_ratio: float, max_risk_pct: float = 0.02, kelly_fraction: float = 0.25) -> float:
+def kelly_position_size(confidence_pct: float, rr_ratio: float, max_risk_pct: float = 0.045, kelly_fraction: float = 0.50) -> float:
     """
     Fractional Kelly Criterion for optimal position sizing.
     
@@ -164,7 +164,7 @@ def get_kelly_recommendation(session_stats: dict, base_confidence: float, rr_rat
     Get Kelly-adjusted position sizing that adapts to session performance.
     If session is going poorly, automatically reduce aggression.
     """
-    fraction = 0.25  # Default quarter-Kelly
+    fraction = 0.50  # Default half-Kelly for Competition Mode
     
     win_rate = session_stats.get("win_rate", 0)
     session_trades = session_stats.get("session_trades", 0)
@@ -173,11 +173,11 @@ def get_kelly_recommendation(session_stats: dict, base_confidence: float, rr_rat
     # Adaptive Kelly fraction based on live session performance
     if session_trades >= 3:
         if win_rate >= 70:
-            fraction = 0.35  # Slightly more aggressive on hot streak
+            fraction = 0.75  # Highly aggressive on hot streak
         elif win_rate < 40:
-            fraction = 0.15  # Reduce size on cold streak
+            fraction = 0.25  # Reduce size on cold streak
         elif streak <= -3:
-            fraction = 0.10  # Emergency reduction on loss streak
+            fraction = 0.15  # Emergency reduction on loss streak
     
     risk_pct = kelly_position_size(base_confidence, rr_ratio, kelly_fraction=fraction)
     
