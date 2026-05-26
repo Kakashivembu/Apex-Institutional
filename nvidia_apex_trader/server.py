@@ -74,12 +74,14 @@ from core.mt5_engine import (
 # Broker-specific symbol maps — auto-selected based on connected MT5 server
 BROKER_SYMBOL_MAPS = {
     "xmglobal": [
-        "BTCUSD#", "GOLD.i#",
-        "GBPJPY#", "US30Cash#", "US100Cash#"
+        "GOLD.i#",
+        "GBPJPY#", "US30Cash#",
+        "EURUSD#", "USDJPY#", "GBPUSD#", "AUDUSD#", "USDCAD#"
     ],
     "goatfunded": [
-        "BTCUSD.x", "XAUUSD.x",
-        "GBPJPY.x", "US30.x", "NAS100.x"
+        "XAUUSD.x",
+        "GBPJPY.x", "US30.x",
+        "EURUSD.x", "USDJPY.x", "GBPUSD.x", "AUDUSD.x", "USDCAD.x"
     ],
 }
 
@@ -166,38 +168,18 @@ def get_current_session_pairs() -> set:
     return active_pairs
 
 def get_active_scan_symbols() -> list:
-    """Return the current broker symbols filtered by the saved trading mode and active sessions."""
+    """Return the current broker symbols filtered by the saved trading mode."""
     params = _load_params_from_disk()
     mode = str(params.get("mode", "forex")).lower()
     
-    if mode == "forex":
-        now = datetime.utcnow()
-        utc_decimal = now.hour + now.minute / 60.0
-        active_session_bases = get_current_session_pairs()
-        filtered = []
-        for symbol in TARGET_SYMBOLS:
-            if not _is_forex_symbol(symbol):
-                continue
-            
-            # Gold is strictly limited to London and NY Overlap (08:00 to 16:00 UTC)
-            if "GOLD" in symbol.upper() or "XAU" in symbol.upper():
-                if 8 <= utc_decimal < 16:
-                    filtered.append(symbol)
-                continue
-            
-            # Check if symbol matches an active pair (ignoring suffixes)
-            clean = "".join(ch for ch in str(symbol).upper() if ch.isalpha())
-            if clean[:6] in active_session_bases:
-                filtered.append(symbol)
-        
-        # If no pairs are active, return an empty list
-        return filtered
-        
-    elif mode == "crypto":
+    if mode == "crypto":
         # Strictly return ONLY crypto symbols to save tokens on weekends
         return [sym for sym in TARGET_SYMBOLS if _is_crypto_symbol(sym)]
         
-    # Fallback for "all" or any other mode
+    # For forex or all mode, we just return the full list.
+    # Since we heavily pruned TARGET_SYMBOLS to just 5 highly volatile assets,
+    # we want to scan all of them. The SMC Killzone logic in macro_sensors.py 
+    # will handle whether it's safe to enter a trade or not.
     return list(TARGET_SYMBOLS)
 
 FLEET_SCAN_DELAY = 10
@@ -294,6 +276,17 @@ def calculate_dynamic_lot_size(symbol, current_price, stop_loss_price, account_e
     # 4. Calculate Raw Lot Size
     # Formula: Lots = Dollar Risk / (SL Distance in Points * Point Value)
     raw_lot_size = dollar_risk / (sl_distance_points * point_value)
+    
+    # 4.5. Margin Constraint Check
+    # Prevent "No money" errors by capping lot size to 90% of available FREE margin
+    margin_for_one_lot = mt5.order_calc_margin(mt5.ORDER_TYPE_BUY, symbol, 1.0, current_price)
+    if margin_for_one_lot and margin_for_one_lot > 0:
+        account_info = mt5.account_info()
+        available_margin = account_info.margin_free if account_info else account_equity
+        max_lot_by_margin = (available_margin * 0.90) / margin_for_one_lot
+        if raw_lot_size > max_lot_by_margin:
+            print(f"[RISK] Margin Cap active: {raw_lot_size:.2f} lots requires too much margin. Capped at {max_lot_by_margin:.2f} lots (Free Margin: ${available_margin:.2f}).")
+            raw_lot_size = max_lot_by_margin
     
     # 5. Clamp to MT5 Broker Limits
     min_lot = symbol_info.volume_min
@@ -841,7 +834,9 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 "sweep_detected": sweep.get("sweep_detected", False),
                 "sweep_direction": sweep.get("direction", "NONE"),
                 "sweep_sl_anchor": sweep.get("stop_loss_anchor", 0.0),
-                "sweep_details": sweep.get("details", "")
+                "sweep_details": sweep.get("details", ""),
+                "fvg": fvg,
+                "ob": ob
             }
 
             
@@ -850,6 +845,15 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
     except Exception as smc_err:
         smc_section = f"=== INSTITUTIONAL SMC LEVELS ===\nSMC detection error: {smc_err}"
         print(f"[SMC] Detection error (non-blocking): {smc_err}")
+
+    # ── FOOTPRINT (TICK DATA AGGREGATION) ──
+    from core.macro_sensors import build_footprint_profile
+    try:
+        footprint_str = build_footprint_profile(symbol, lookback_minutes=5)
+        print(footprint_str)
+    except Exception as fp_err:
+        footprint_str = f"[FOOTPRINT] Unavailable: {fp_err}"
+        print(footprint_str)
 
     # ── ORDER FLOW IMBALANCE: Detect institutional HFT footprinting ──
     ofi_value = 0.0
@@ -873,7 +877,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
 
     vpin_section = f"VPIN: {vpin_data['vpin']:.3f} | Toxic: {vpin_data['is_toxic']} | Dominant: {vpin_data['dominant_side']}"
 
-    market_data_text = f"Current equity: ${last_equity['total']}, Positions: {len(last_positions)} | {market_data_text_template}\n\n=== CANDLE TREND DATA ===\n{candle_data}\n\n{smc_section}\n\n=== LEVEL 2 ORDER BOOK INTELLIGENCE ===\n{dom_data}\n\n=== ORDER FLOW IMBALANCE (OFI) ===\nOFI: {ofi_value:+.0f}\n\n=== VPIN (Informed Trading Probability) ===\n{vpin_section}"
+    market_data_text = f"Current equity: ${last_equity['total']}, Positions: {len(last_positions)} | {market_data_text_template}\n\n=== CANDLE TREND DATA ===\n{candle_data}\n\n{smc_section}\n\n=== TICK FOOTPRINT (ORDER FLOW) ===\n{footprint_str}\n\n=== LEVEL 2 ORDER BOOK INTELLIGENCE ===\n{dom_data}\n\n=== ORDER FLOW IMBALANCE (OFI) ===\nOFI: {ofi_value:+.0f}\n\n=== VPIN (Informed Trading Probability) ===\n{vpin_section}"
 
 
     try:
@@ -1002,6 +1006,9 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             # Crypto is 24/7, do not block entries based on Forex session times
             if params.get("mode") == "crypto":
                 pass
+            elif current_trading_mode in ["challenge", "competition"]:
+                # Bypass Killzone filter for Challenge/Competition modes (trade 24/7)
+                print(f"[GATE-2] BYPASS: {current_trading_mode.upper()} mode allows 24/7 trading.")
             else:
                 from core.macro_sensors import get_smc_killzone
                 kz_active, kz_name = get_smc_killzone(symbol)
@@ -1076,8 +1083,11 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         # --- GATE 5: Early Pullback Continuation (green-circle entry) ---
         if not entry_blocked:
             if not early_entry.get("pass"):
-                print(f"[GATE-5] BLOCKED: Late chase detected. {early_entry.get('reason')}")
-                entry_blocked = True
+                if consensus_strength >= consensus_threshold:
+                    print(f"[GATE-5] BYPASS: Strong AI Consensus ({consensus_strength}% >= {consensus_threshold}%). Trusting AI Swarm over M15 pullback logic.")
+                else:
+                    print(f"[GATE-5] BLOCKED: Late chase detected. {early_entry.get('reason')}")
+                    entry_blocked = True
             else:
                 print(f"[GATE-5] EARLY ENTRY OK: {early_entry.get('reason')}")
 
@@ -1203,13 +1213,23 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         from core.mt5_engine import execute_mt5_order, get_mt5_positions
                         
                         existing = await get_mt5_positions()
-                        if existing and len(existing) >= MAX_OPEN_POSITIONS:
-                            print(f"[TRADE:{t_account}] Skipping: MAX_OPEN_POSITIONS reached ({len(existing)}/{MAX_OPEN_POSITIONS})")
+                        
+                        # Fix: We must also include Pending Orders (Limit/Stop) in our exposure calculation!
+                        from core.mt5_engine import get_mt5_pending_orders
+                        pending_orders = await get_mt5_pending_orders()
+                        
+                        total_exposure = (len(existing) if existing else 0) + (len(pending_orders) if pending_orders else 0)
+                        
+                        if total_exposure >= MAX_OPEN_POSITIONS:
+                            print(f"[TRADE:{t_account}] Skipping: MAX_OPEN_POSITIONS reached ({total_exposure}/{MAX_OPEN_POSITIONS})")
                             return
                         
                         symbol_positions = [p for p in (existing or []) if p.get("symbol") == symbol]
-                        if len(symbol_positions) >= MAX_POSITIONS_PER_SYMBOL:
-                            print(f"[TRADE:{t_account}] Skipping {symbol}: Per-symbol limit reached ({len(symbol_positions)}/{MAX_POSITIONS_PER_SYMBOL})")
+                        symbol_pending = [o for o in (pending_orders or []) if o.get("symbol") == symbol]
+                        total_symbol_exposure = len(symbol_positions) + len(symbol_pending)
+                        
+                        if total_symbol_exposure >= MAX_POSITIONS_PER_SYMBOL:
+                            print(f"[TRADE:{t_account}] Skipping {symbol}: Per-symbol limit reached ({total_symbol_exposure}/{MAX_POSITIONS_PER_SYMBOL} - Live: {len(symbol_positions)}, Pending: {len(symbol_pending)})")
                             return
                         
                         account_info = await asyncio.to_thread(mt5.account_info)
@@ -1287,23 +1307,69 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         print(f"[TRADE:{t_account}] {action} {symbol}: {contract_size} lots @ ${mark_price} (Equity: ${acct_equity:.2f})")
                         print(f"[TRADE:{t_account}] AI Risk: SL={stop_loss_pct}% (${sl_price}) | TP={take_profit_pct}% (${tp_price}) | Lev={ai_leverage}x")
                         
-                        order_result = await execute_mt5_order(symbol, api_side, contract_size, sl_price, tp_price)
+                        from core.mt5_engine import execute_mt5_order, place_mt5_limit_order
+                        
+                        smc = last_smc_data.get(symbol, {})
+                        ob = smc.get("ob", {})
+                        fvg = smc.get("fvg", {})
+                        
+                        print(f"[LIMIT-DEBUG] {symbol} | is_momentum: {is_momentum_breakout} | OB nearest_bearish: {bool(ob.get('nearest_bearish'))} | FVG nearest_bearish: {bool(fvg.get('nearest_bearish'))}")
+                        
+                        limit_price = 0.0
+                        if not is_momentum_breakout:
+                            if action == "LONG":
+                                if ob.get("nearest_bullish"):
+                                    limit_price = float(ob["nearest_bullish"]["high"])
+                                    print(f"[LIMIT-DEBUG] Picked LONG limit_price from OB high: {limit_price}")
+                                elif fvg.get("nearest_bullish"):
+                                    limit_price = float(fvg["nearest_bullish"]["gap_top"])
+                                    print(f"[LIMIT-DEBUG] Picked LONG limit_price from FVG gap_top: {limit_price}")
+                            else:
+                                if ob.get("nearest_bearish"):
+                                    limit_price = float(ob["nearest_bearish"]["low"])
+                                    print(f"[LIMIT-DEBUG] Picked SHORT limit_price from OB low: {limit_price}")
+                                elif fvg.get("nearest_bearish"):
+                                    limit_price = float(fvg["nearest_bearish"]["gap_bottom"])
+                                    print(f"[LIMIT-DEBUG] Picked SHORT limit_price from FVG gap_bottom: {limit_price}")
+                                    
+                        is_limit = limit_price > 0 and ((action == "LONG" and limit_price < mark_price) or (action == "SHORT" and limit_price > mark_price))
+
+                        print(f"[LIMIT-DEBUG] limit_price: {limit_price} | mark_price: {mark_price} | is_limit: {is_limit}")
+
+                        if is_limit:
+                            # Recalculate SL and TP based on the limit price, otherwise MT5 rejects the order!
+                            if action == "LONG":
+                                sl_price = round(limit_price * (1 - stop_loss_pct/100) / tick) * tick
+                                tp_price = round(limit_price * (1 + take_profit_pct/100) / tick) * tick
+                            else:
+                                sl_price = round(limit_price * (1 + stop_loss_pct/100) / tick) * tick
+                                tp_price = round(limit_price * (1 - take_profit_pct/100) / tick) * tick
+                                
+                            print(f"[RETEST LIMIT] Placing Limit Order for {symbol} at {limit_price} (Current: {mark_price}) | Adjusted SL: {sl_price} | Adjusted TP: {tp_price}")
+                            order_result = await place_mt5_limit_order(symbol, api_side, contract_size, limit_price, sl_price, tp_price)
+                        else:
+                            if is_momentum_breakout:
+                                print(f"[BREAKOUT] Executing Market Order for {symbol} due to momentum breakout.")
+                            else:
+                                print(f"[MARKET] Executing Market Order for {symbol} (No valid limit/retest level found).")
+                            order_result = await execute_mt5_order(symbol, api_side, contract_size, sl_price, tp_price)
                         
                         trade_entry = {
                             "timestamp": datetime.now().isoformat(),
                             "account": t_account, "action": action, "symbol": symbol,
-                            "contracts": contract_size, "entry_price": mark_price,
+                            "contracts": contract_size, "entry_price": limit_price if is_limit else mark_price,
                             "balance_used": acct_equity,
                             "sl": sl_price, "tp": tp_price,
                             "sl_pct": stop_loss_pct, "tp_pct": take_profit_pct,
                             "leverage": ai_leverage, "volatility": volatility,
                             "result": "success" if order_result.get("success") else "failed",
                             "dry_run": order_result.get("dry_run", False),
-                            "order_id": order_result.get("result", {}).get("order_id", "N/A")
+                            "order_id": order_result.get("result", {}).get("order_id", "N/A"),
+                            "is_limit": is_limit
                         }
                         trade_log.append(trade_entry)
                         
-                        if order_result.get("success"):
+                        if order_result.get("success") and not is_limit:
                             entry_fee = contract_size * mark_price * 0.0001
                             ai_reasoning = result.get("reasoning", "")
                             asyncio.create_task(asyncio.to_thread(
@@ -1368,6 +1434,17 @@ async def step_trailing_loop():
                 continue
             
             active_keys = key_manager.get_active_keys()
+            if not active_keys:
+                await asyncio.sleep(10)
+                continue
+                
+            acc_info = await asyncio.to_thread(mt5.account_info)
+            if acc_info:
+                curr_login = str(acc_info.login)
+                active_keys = [k for k in active_keys if str(k.get("api_key", "")) == curr_login]
+            else:
+                active_keys = []
+                
             if not active_keys:
                 await asyncio.sleep(10)
                 continue
@@ -1446,7 +1523,21 @@ async def step_trailing_loop():
                             # Old loss-only hardcoded cooldown removed. Cooldowns are now managed globally per-stack.
 
                             db_close_reason = "manual"
-                            if history:
+                            reason_code = history.get("exit_reason_code", -1)
+                            
+                            # MT5 Deal Reason Constants:
+                            # 4 = DEAL_REASON_SL, 5 = DEAL_REASON_TP, 6 = DEAL_REASON_SO (Stop Out)
+                            # 0 = Desktop Client, 1 = Mobile, 2 = Web
+                            if reason_code == 4:
+                                db_close_reason = "sl"
+                            elif reason_code == 5:
+                                db_close_reason = "tp"
+                            elif reason_code == 6:
+                                db_close_reason = "sl" # Stop Out treated as SL
+                            elif reason_code in (0, 1, 2):
+                                db_close_reason = "manual"
+                            else:
+                                # Fallback heuristic if reason code missing or DEAL_REASON_EXPERT
                                 _tp = float(state.get("current_tp", 0) or 0)
                                 if _tp > 0 and ((_side == "long" and _exit >= _tp * 0.995) or (_side == "short" and _exit <= _tp * 1.005)):
                                     db_close_reason = "tp"
@@ -1525,14 +1616,20 @@ async def step_trailing_loop():
                         # --- ATR-Based Dynamic Trailing Stops ---
                         dynamic_atr_pct = last_smc_data.get(symbol, {}).get("atr_pct", 0.0)
                         if dynamic_atr_pct > 0.0:
-                            # If ATR is 0.2%: Initial SL = 0.3%, T1 Trigger = 0.2%, T2 Trigger = 0.4%
-                            cfg["initial_sl_pct"] = max(dynamic_atr_pct * 1.5, cfg.get("initial_sl_pct", 0.2))
-                            cfg["tier1_trigger_pct"] = dynamic_atr_pct * 1.0
-                            cfg["tier1_sl_pct"] = dynamic_atr_pct * 0.2
-                            cfg["tier2_trigger_pct"] = dynamic_atr_pct * 2.0
-                            cfg["tier2_trail_pct"] = dynamic_atr_pct * 0.5
-                            cfg["tier3_trigger_pct"] = dynamic_atr_pct * 3.0
-                            cfg["tier3_trail_pct"] = dynamic_atr_pct * 0.25
+                            # Apply ATR only to widen Initial SL to survive noise
+                            cfg["initial_sl_pct"] = max(dynamic_atr_pct * 1.2, cfg.get("initial_sl_pct", 0.08))
+                            
+                            # CAP the trailing triggers so they never expand beyond 1.5x of the static config.
+                            # This fixes the bug where huge ATRs (e.g. Gold) pushed the Breakeven trigger so far away 
+                            # that a $400 profit never locked in and resulted in a full SL hit.
+                            cfg["tier1_trigger_pct"] = min(dynamic_atr_pct * 0.5, cfg.get("tier1_trigger_pct", 0.05) * 1.5)
+                            cfg["tier1_sl_pct"] = min(dynamic_atr_pct * 0.1, cfg.get("tier1_sl_pct", 0.01) * 1.5)
+                            
+                            cfg["tier2_trigger_pct"] = min(dynamic_atr_pct * 1.0, cfg.get("tier2_trigger_pct", 0.10) * 1.5)
+                            cfg["tier2_trail_pct"] = min(dynamic_atr_pct * 0.4, cfg.get("tier2_trail_pct", 0.05) * 1.5)
+                            
+                            cfg["tier3_trigger_pct"] = min(dynamic_atr_pct * 1.5, cfg.get("tier3_trigger_pct", 0.15) * 1.5)
+                            cfg["tier3_trail_pct"] = min(dynamic_atr_pct * 0.25, cfg.get("tier3_trail_pct", 0.03) * 1.5)
                         
                         # Fetch symbol precision ONCE per position per cycle
                         _sym_info = await asyncio.to_thread(mt5.symbol_info, symbol)
@@ -1894,15 +1991,15 @@ async def step_trailing_loop():
                                 state["last_api_update"] = time.time()
                                 print(f"  [OK] SL LOCKED at {final_sl:.{digits}f} via {sl_source.upper()}")
                                     
-                            # Update tier from math even when AI wins (tier tracks profit level)
+                                # Update tier from math even when AI wins (tier tracks profit level)
                                 if math_wants_update:
                                     state["current_tier"] = max(state["current_tier"], math_tier)
                                     
-                            # FLIGHT-RECORDER: persist tier change / SL update
-                                    save_flight_state(step_trail_state, ai_predictive_traps, force=True)
-                                else:
-                                    print(f"  [FAIL] API failed: {result.get('error', 'Unknown')}")
-                                    state["sl_order_id"] = None
+                                # FLIGHT-RECORDER: persist tier change / SL update
+                                save_flight_state(step_trail_state, ai_predictive_traps, force=True)
+                            else:
+                                print(f"  [FAIL] API failed: {result.get('error', 'Unknown')}")
+                                state["sl_order_id"] = None
                             # Mark AI trap as executed if it was used
                             if sl_source == "ai_trap" and trap:
                                 trap["executed"] = True
@@ -2587,6 +2684,37 @@ async def state_broadcast_loop():
         await asyncio.sleep(2)
 
 
+async def pending_order_loop():
+    """Background task to monitor limit orders and cancel them if they expire unfilled."""
+    from core.mt5_engine import get_mt5_pending_orders, cancel_mt5_pending_order
+    import MetaTrader5 as mt5
+    
+    while True:
+        try:
+            if not trading_enabled:
+                await asyncio.sleep(10)
+                continue
+                
+            orders = await get_mt5_pending_orders()
+            
+            for o in orders:
+                tick = mt5.symbol_info_tick(o['symbol'])
+                if not tick: 
+                    continue
+                    
+                broker_now = tick.time
+                age_seconds = broker_now - o["time_setup"]
+                
+                # If order has been sitting for > 60 minutes (3600 seconds)
+                if age_seconds > 3600:
+                    print(f"[LIMIT MANAGER] Canceling pending order {o['ticket']} ({o['symbol']}) - Expired after {int(age_seconds//60)} mins.")
+                    await cancel_mt5_pending_order(o["ticket"])
+                    
+        except Exception as e:
+            print(f"[LIMIT MANAGER] Loop error: {e}")
+            
+        await asyncio.sleep(30)
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -2608,6 +2736,7 @@ async def startup_event():
     asyncio.create_task(step_trailing_loop())
     asyncio.create_task(predictive_trap_loop())
     asyncio.create_task(midnight_reset_loop())  # Daily circuit breaker reset
+    asyncio.create_task(pending_order_loop())
 
 @app.get("/api/step-trail/status")
 async def get_step_trail_status():

@@ -277,6 +277,87 @@ async def execute_mt5_order(symbol: str, side: str, lot_size: float, sl: float =
     return {"success": True, "order_id": ticket, "result": {"order_id": ticket}, "protection_attached": True}
 
 
+async def place_mt5_limit_order(symbol: str, side: str, lot_size: float, limit_price: float, sl: float = None, tp: float = None) -> dict:
+    """
+    Executes a limit order (pending order) on MT5 at a specific price.
+    """
+    symbol = _resolve_tradeable_symbol(symbol)
+    
+    # Tick info
+    tick = mt5.symbol_info_tick(symbol)
+    if tick is None:
+        return {"success": False, "error": f"Failed to get tick data, error: {mt5.last_error()}"}
+        
+    side_normalized = side.lower()
+    is_buy = side_normalized in ("long", "buy")
+    order_type = mt5.ORDER_TYPE_BUY_LIMIT if is_buy else mt5.ORDER_TYPE_SELL_LIMIT
+    
+    request = {
+        "action": mt5.TRADE_ACTION_PENDING,
+        "symbol": symbol,
+        "volume": float(lot_size),
+        "type": order_type,
+        "price": float(limit_price),
+        "sl": float(sl) if sl is not None else 0.0,
+        "tp": float(tp) if tp is not None else 0.0,
+        "deviation": 20,
+        "magic": 100100,
+        "comment": "Apex Limit",
+        "type_time": mt5.ORDER_TIME_GTC,
+    }
+    
+    logger.info(f"Sending MT5 limit order request: {request}")
+    result = mt5.order_send(request)
+    
+    if result is None:
+        return {"success": False, "error": f"order_send failed, error: {mt5.last_error()}"}
+        
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return {"success": False, "error": result.comment}
+        
+    return {"success": True, "order_id": result.order, "result": {"order_id": result.order}}
+
+
+async def cancel_mt5_pending_order(ticket: int) -> dict:
+    """Cancels a pending order."""
+    request = {
+        "action": mt5.TRADE_ACTION_REMOVE,
+        "order": ticket,
+    }
+    result = mt5.order_send(request)
+    if result is None:
+        return {"success": False, "error": f"order_send failed: {mt5.last_error()}"}
+    if result.retcode != mt5.TRADE_RETCODE_DONE:
+        return {"success": False, "error": result.comment}
+    return {"success": True}
+
+
+async def get_mt5_pending_orders() -> list:
+    """Retrieves all pending limit/stop orders matching magic 100100."""
+    orders = mt5.orders_get()
+    if orders is None:
+        return []
+        
+    pending = []
+    for o in orders:
+        if getattr(o, "magic", 0) != 100100:
+            continue
+        # Check if it's a limit or stop order
+        t = getattr(o, "type", -1)
+        if t in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT, mt5.ORDER_TYPE_BUY_STOP, mt5.ORDER_TYPE_SELL_STOP):
+            pending.append({
+                "ticket": o.ticket,
+                "symbol": o.symbol,
+                "type": t,
+                "volume": o.volume_initial,
+                "price": o.price_open,
+                "sl": o.sl,
+                "tp": o.tp,
+                "time_setup": o.time_setup
+            })
+    return pending
+
+
 async def close_mt5_position(ticket: int, symbol: str = None, volume: float = None, side: str = None) -> dict:
     """
     Close a single MT5 position by ticket number.
@@ -439,6 +520,7 @@ async def get_mt5_closed_position_details(position_ticket: int, lookback_days: i
         "volume": float(getattr(entry_deal, "volume", 0.0) or 0.0),
         "pnl": round(pnl, 4),
         "exit_time": datetime.fromtimestamp(getattr(exit_deal, "time", 0)).isoformat() if getattr(exit_deal, "time", 0) else datetime.now().isoformat(),
+        "exit_reason_code": getattr(exit_deal, "reason", -1),
     }
 
 

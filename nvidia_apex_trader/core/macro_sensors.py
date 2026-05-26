@@ -495,7 +495,94 @@ def is_killzone_active() -> bool:
     is_active, _ = get_smc_killzone()
     return is_active
 
-def detect_asian_range(candles: list, current_price: float) -> str:
+import collections
+from datetime import datetime, timedelta
+
+def build_footprint_profile(symbol: str, lookback_minutes: int = 5) -> str:
+    """
+    Builds a Tick Density and Proxy Delta footprint for CFD/Forex brokers that lack 
+    L3 order flow flags. Uses tick concentration to find the Point of Control (POC).
+    """
+    try:
+        import MetaTrader5 as mt5
+        utc_from = datetime.now() - timedelta(minutes=lookback_minutes)
+        ticks = mt5.copy_ticks_from(symbol, utc_from, 50000, mt5.COPY_TICKS_ALL)
+        
+        if ticks is None or len(ticks) == 0:
+            return f"[FOOTPRINT] {symbol}: No tick data available."
+            
+        # Determine bin size based on asset type
+        # For Gold (XAUUSD): 0.10 bins. For US30: 1.0 bins. For Forex: 0.0001 bins
+        if "XAU" in symbol or "GOLD" in symbol:
+            bin_size = 0.1
+        elif "US30" in symbol or "NAS" in symbol or "US100" in symbol:
+            bin_size = 1.0
+        elif "JPY" in symbol:
+            bin_size = 0.01
+        else:
+            bin_size = 0.0001
+            
+        profile = collections.defaultdict(lambda: {"ticks": 0, "proxy_buy": 0, "proxy_sell": 0})
+        
+        last_price = None
+        for t in ticks:
+            # Use mid price for binning
+            mid = (t['bid'] + t['ask']) / 2.0
+            price_bin = round(mid / bin_size) * bin_size
+            
+            profile[price_bin]["ticks"] += 1
+            
+            if last_price is not None:
+                if mid > last_price:
+                    profile[price_bin]["proxy_buy"] += 1
+                elif mid < last_price:
+                    profile[price_bin]["proxy_sell"] += 1
+            last_price = mid
+            
+        if not profile:
+            return f"[FOOTPRINT] {symbol}: Insufficient tick variance."
+            
+        # Find Point of Control (POC) - price bin with most ticks
+        poc_bin = max(profile.items(), key=lambda x: x[1]["ticks"])
+        poc_price = poc_bin[0]
+        poc_data = poc_bin[1]
+        
+        # Analyze distribution
+        sorted_bins = sorted(profile.keys())
+        high_bin = sorted_bins[-1]
+        low_bin = sorted_bins[0]
+        
+        high_data = profile[high_bin]
+        low_data = profile[low_bin]
+        
+        # Detect Trapped Buyers at the highs
+        trapped_buyers = False
+        if high_data["proxy_buy"] > high_data["proxy_sell"] * 2 and high_data["ticks"] > (poc_data["ticks"] * 0.2):
+            trapped_buyers = True
+            
+        # Detect Trapped Sellers at the lows
+        trapped_sellers = False
+        if low_data["proxy_sell"] > low_data["proxy_buy"] * 2 and low_data["ticks"] > (poc_data["ticks"] * 0.2):
+            trapped_sellers = True
+            
+        delta = poc_data["proxy_buy"] - poc_data["proxy_sell"]
+        bias = "NEUTRAL"
+        if delta > poc_data["ticks"] * 0.1:
+            bias = "BUY"
+        elif delta < -poc_data["ticks"] * 0.1:
+            bias = "SELL"
+            
+        summary = f"[FOOTPRINT] POC: {poc_price:.4f} | POC Bias: {bias} (Delta: {delta:+} ticks)"
+        if trapped_buyers:
+            summary += f" | TRAPPED BUYERS AT HIGH ({high_bin:.4f})"
+        if trapped_sellers:
+            summary += f" | TRAPPED SELLERS AT LOW ({low_bin:.4f})"
+            
+        return summary
+    except Exception as e:
+        return f"[FOOTPRINT] Error: {e}"
+
+def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> str:
     """
     Detects the Asian Range (00:00 to 06:00 broker time) for the most recent day in the provided candles.
     Checks if the current price is sweeping the high or low of this range.

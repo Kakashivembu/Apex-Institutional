@@ -195,11 +195,8 @@ def check_circuit_breaker(current_balance: float, current_equity: float = 0.0, a
             print(f"[CIRCUIT BREAKER] [{account_id}] RECOVERED — Limits updated or drawdown recovered.")
             print(f"{'='*70}\n")
             
-        if state["active"]:
-            save_circuit_state()
-    else:
-        # Save state periodically
-        save_circuit_state()
+    # Save state if active (or periodically)
+    save_circuit_state()
 
     return {
         "active": state["active"],

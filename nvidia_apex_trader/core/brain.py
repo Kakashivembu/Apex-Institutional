@@ -1210,7 +1210,8 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
         "volatility": "high" if avg_conf < 50 else "medium",
         "entry_price": scalper_res.get("entry_price", live_asset_price),
         "_debug": {
-            "hermes_reasoning": reasoning_summary
+            "hermes_reasoning": reasoning_summary,
+            "trend_bias": compute_trend_bias(market_data_text)
         }
     }
 def is_aplus_setup(market_data_text: str, trend_bias: dict, live_price: float, symbol: str, timestamp_str: str = "", smc_proximity_pct: float = 0.0015, ofi: float = 0.0, vpin: float = 0.0, vpin_side: str = "BALANCED", sweep_result: dict = None) -> tuple[bool, str]:
