@@ -1097,21 +1097,24 @@ Asset: {symbol} | Type: {risk_profile['class']}
 Context: {market_data_text}
 Macro Context: {macro_context}
 Memory: {memory_text}
-Task: Perform deep Fundamental & Smart Money Concepts (SMC) analysis. Look for liquidity sweeps and institutional alignment. Filter liquidity sweeps against these fundamental flows.
+Task: Perform deep Fundamental & Smart Money Concepts (SMC) analysis. You MUST prioritize the AMD (Accumulation, Manipulation, Distribution) pattern. Check the ICT LIQUIDITY & AMD PATTERN section:
+- If Phase 1 (ACCUMULATION): Output HOLD. Institutions are mapping liquidity.
+- If Phase 2 (MANIPULATION): A sweep is occurring. If sweeping Asian Lows, anticipate BULLISH reversal. If sweeping Asian Highs, anticipate BEARISH reversal. Only signal when the Footprint POC bias and OFI confirm the reversal direction.
+- If Phase 3 (DISTRIBUTION): The reversal should be underway. Confirm with market structure BOS/CHoCH.
 Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "leverage": <1-20>, "stop_loss_pct": <float>, "take_profit_pct": <float>, "reasoning": "..."}}"""
 
     # 2. MACRO Prompt (News & Sentiment - Simple -> LM Studio)
     macro_prompt = f"""You are Antigravity MACRO, the News & Sentiment Agent.
 Asset: {symbol}
 Context: {market_data_text}
-Task: Analyze multi-timeframe trends, moving averages, and forex news sentiment.
+Task: Analyze multi-timeframe trends and forex news sentiment. Pay close attention to the AMD Phase in the context. During Phase 1 (Accumulation/Asian session), always vote HOLD. During Phase 2 (Manipulation), watch for reversal signals. During Phase 3 (Distribution), confirm the trend continuation.
 Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "reasoning": "..."}}"""
 
     # 3. SCALPER Prompt (Orderbook/DOM - Fast -> LM Studio)
     scalper_prompt = f"""You are Antigravity SCALPER, the Orderbook DOM Agent.
 Asset: {symbol} | Live Price: {live_asset_price}
 DOM Data: {dom_data}
-Task: Analyze Level 2 Orderbook imbalances (OFI, VPIN) for sniper entry points. Focus on toxic orderflow.
+Task: Analyze Level 2 Orderbook imbalances (OFI, VPIN) and the Tick Footprint for sniper entry points. CRITICAL: If the AMD Phase shows MANIPULATION (sweep of Asian Range), watch for VPIN going non-toxic and OFI flipping in the reversal direction. This is the institutional re-entry signal. Only vote BUY/SELL when order flow confirms the reversal.
 Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "entry_price": <float>, "reasoning": "..."}}"""
 
     # Launch the parallel swarm

@@ -603,7 +603,8 @@ def _build_market_data_text(
     candle_text = format_for_llm(market_data)
     
     from core.macro_sensors import detect_asian_range
-    asian_range_str = detect_asian_range(h1_candles if h1_candles else primary_candles, current_price)
+    amd_data = detect_asian_range(h1_candles if h1_candles else primary_candles, current_price)
+    asian_range_str = amd_data.get("description", "Range Unknown")
 
     header = (
         f"=== HISTORICAL {symbol} MARKET DATA (MT5 Backtest Replay) ===\n"

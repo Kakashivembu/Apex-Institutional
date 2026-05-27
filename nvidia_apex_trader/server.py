@@ -791,7 +791,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             
             # --- ASIAN RANGE DETECTION ---
             from core.macro_sensors import detect_asian_range
-            asian_range_str = detect_asian_range(raw_1h, current)
+            amd_data = detect_asian_range(raw_1h, current)
+            asian_range_str = amd_data.get("description", "")
             smc_section += f"\n\n=== ICT LIQUIDITY & AMD PATTERN ===\n{asian_range_str}"
             
             # --- LUXALGO SMC INTEGRATION ---
@@ -836,7 +837,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 "sweep_sl_anchor": sweep.get("stop_loss_anchor", 0.0),
                 "sweep_details": sweep.get("details", ""),
                 "fvg": fvg,
-                "ob": ob
+                "ob": ob,
+                "amd": amd_data
             }
 
             
@@ -1001,23 +1003,29 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         # caused double-blocking when LM Studio returned HOLD (abstention, not opposition).
 
 
-        # --- GATE 2: Full London/New York Session Filter (NY Time) ---
+        # --- GATE 2: Strict AMD Session / Killzone Filter ---
         if not entry_blocked:
             # Crypto is 24/7, do not block entries based on Forex session times
             if params.get("mode") == "crypto":
                 pass
-            elif current_trading_mode in ["challenge", "competition"]:
-                # Bypass Killzone filter for Challenge/Competition modes (trade 24/7)
-                print(f"[GATE-2] BYPASS: {current_trading_mode.upper()} mode allows 24/7 trading.")
             else:
+                # 1. Strict Killzone Timing Filter (No challenge mode bypass!)
                 from core.macro_sensors import get_smc_killzone
                 kz_active, kz_name = get_smc_killzone(symbol)
                 if not kz_active:
                     import pytz
                     from datetime import datetime as _dt
                     _ny_now = _dt.now(pytz.utc).astimezone(pytz.timezone('America/New_York'))
-                    print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping entry. Active session is London/New York 2:00 AM-5:00 PM NY.")
+                    print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping entry.")
                     entry_blocked = True
+                
+                # 2. AMD Phase Filter (Block during Asian Accumulation)
+                if not entry_blocked:
+                    amd_dict = last_smc_data.get(symbol, {}).get("amd", {})
+                    amd_phase = amd_dict.get("phase", "UNKNOWN")
+                    if amd_phase == "ACCUMULATION":
+                        print(f"[GATE-2] BLOCKED: Asian Session Accumulation active. Bot is dormant, mapping liquidity boundaries.")
+                        entry_blocked = True
 
         # --- MOMENTUM BREAKOUT OVERRIDE ---
         # Detect early session open breakouts to bypass slow H1 EMAs
@@ -1298,6 +1306,27 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                             sl_price = round(mark_price * (1 + stop_loss_pct/100) / tick) * tick
                             tp_price = round(mark_price * (1 - take_profit_pct/100) / tick) * tick
                             api_side = "short"
+                        
+                        # --- AMD TARGET OVERRIDE ---
+                        # If an AMD sweep was detected, peg TP to the opposite Asian Range boundary
+                        amd_smc = last_smc_data.get(symbol, {}).get("amd", {})
+                        if amd_smc.get("is_valid") and amd_smc.get("phase") in ("MANIPULATION", "DISTRIBUTION"):
+                            a_high = amd_smc["asian_high"]
+                            a_low = amd_smc["asian_low"]
+                            
+                            if action == "LONG" and amd_smc.get("is_sweeping_low"):
+                                # Bullish reversal: TP = Asian High, SL stays tight
+                                amd_tp = round(a_high / tick) * tick
+                                if amd_tp > mark_price:
+                                    tp_price = amd_tp
+                                    print(f"[AMD-SNIPER] LONG TP anchored to Asian High: {tp_price}")
+                                    
+                            elif action == "SHORT" and amd_smc.get("is_sweeping_high"):
+                                # Bearish reversal: TP = Asian Low, SL stays tight
+                                amd_tp = round(a_low / tick) * tick
+                                if amd_tp < mark_price:
+                                    tp_price = amd_tp
+                                    print(f"[AMD-SNIPER] SHORT TP anchored to Asian Low: {tp_price}")
                             
                         contract_size = await asyncio.to_thread(
                             calculate_dynamic_lot_size,
@@ -2938,21 +2967,9 @@ async def close_all_profitable(request: Request):
 async def get_market_schedule():
     now = datetime.utcnow()
     utc_decimal = now.hour + now.minute / 60.0
+    ist_time = now + timedelta(hours=5, minutes=30)
+    ist_decimal = ist_time.hour + ist_time.minute / 60.0
     
-    active_sessions = []
-    
-    for s in SESSION_CONFIGS:
-        is_active = False
-        if s["open"] < s["close"]:
-            if s["open"] <= utc_decimal < s["close"]:
-                is_active = True
-        else:
-            if utc_decimal >= s["open"] or utc_decimal < s["close"]:
-                is_active = True
-                
-        if is_active:
-            active_sessions.append(s["id"])
-            
     # Calculate IST offset (UTC + 5:30)
     def utc_to_ist_str(utc_h):
         total_mins = int(utc_h * 60) + 330
@@ -2962,7 +2979,89 @@ async def get_market_schedule():
         display_h = h if h <= 12 else h - 12
         if display_h == 0: display_h = 12
         return f"{display_h}:{m:02d} {ampm}"
-        
+    
+    # AMD Phase Schedule in IST
+    # Broker time is typically GMT+2/+3, so Asian Range 00:00-06:00 broker ≈ 03:30-11:30 IST
+    amd_phases = [
+        {
+            "id": "accumulation",
+            "label": "Phase 1 — Accumulation",
+            "emoji": "🟣",
+            "ist_open": "3:30 AM",
+            "ist_close": "11:30 AM",
+            "utc_open": "10:00 PM",
+            "utc_close": "6:00 AM",
+            "color": "purple",
+            "bot_status": "DORMANT",
+            "description": "Asian Session. Bot maps the exact High and Low liquidity boundaries. NO trades are taken. Retail traders set their stop-losses outside this range.",
+            "detail": "The bot sits idle and records the ceiling (Asian High) and floor (Asian Low) of the session. These become the trap boundaries for the Manipulation phase."
+        },
+        {
+            "id": "manipulation",
+            "label": "Phase 2 — Manipulation",
+            "emoji": "🔴",
+            "ist_open": "11:30 AM",
+            "ist_close": "5:30 PM",
+            "utc_open": "6:00 AM",
+            "utc_close": "12:00 PM",
+            "color": "red",
+            "bot_status": "ARMED",
+            "description": "London Session (Judas Swing). Institutions sweep the Asian Range to trigger retail stop-losses. Bot watches for the price to pierce and then reverse back inside the range.",
+            "detail": "The bot is armed and watching. When London pushes price below the Asian Low (or above the Asian High), retail breakout traders get trapped. The bot waits for VPIN to go non-toxic and OFI to flip as confirmation."
+        },
+        {
+            "id": "distribution",
+            "label": "Phase 3 — Distribution",
+            "emoji": "🟢",
+            "ist_open": "5:30 PM",
+            "ist_close": "2:30 AM",
+            "utc_open": "12:00 PM",
+            "utc_close": "9:00 PM",
+            "color": "green",
+            "bot_status": "FIRES",
+            "description": "New York Session (NY Reversal). The true institutional trend begins. Bot fires a single sniper entry with TP anchored to the opposite side of the Asian Range.",
+            "detail": "If London swept the Asian Low → Bot goes LONG targeting the Asian High. If London swept the Asian High → Bot goes SHORT targeting the Asian Low. One-shot, one-kill. Full position held to target."
+        },
+        {
+            "id": "cooldown",
+            "label": "Cooldown Window",
+            "emoji": "🌙",
+            "ist_open": "2:30 AM",
+            "ist_close": "3:30 AM",
+            "utc_open": "9:00 PM",
+            "utc_close": "10:00 PM",
+            "color": "slate",
+            "bot_status": "SLEEPING",
+            "description": "Market gap between NY close and Asia open. All sessions are closed. The bot is fully dormant to avoid low-liquidity slippage.",
+            "detail": "No trading activity. The bot resets its daily AMD state and prepares for the next cycle."
+        }
+    ]
+    
+    # Determine current AMD phase
+    current_phase = "cooldown"
+    if 3.5 <= ist_decimal < 11.5:
+        current_phase = "accumulation"
+    elif 11.5 <= ist_decimal < 17.5:
+        current_phase = "manipulation"
+    elif 17.5 <= ist_decimal < 24.0 or (0 <= ist_decimal < 2.5):
+        current_phase = "distribution"
+    
+    for p in amd_phases:
+        p["is_active"] = (p["id"] == current_phase)
+
+    # Also include old session data for backwards compat
+    active_sessions = []
+    for s in SESSION_CONFIGS:
+        is_active = False
+        if s["open"] < s["close"]:
+            if s["open"] <= utc_decimal < s["close"]:
+                is_active = True
+        else:
+            if utc_decimal >= s["open"] or utc_decimal < s["close"]:
+                is_active = True
+        if is_active:
+            active_sessions.append(s["id"])
+            
     sessions_ist = []
     for s in SESSION_CONFIGS:
         sessions_ist.append({
@@ -2973,8 +3072,6 @@ async def get_market_schedule():
             "pairs": s["pairs"],
             "is_active": s["id"] in active_sessions
         })
-        
-    ist_time = now + timedelta(hours=5, minutes=30)
     
     return {
         "success": True,
@@ -2983,7 +3080,9 @@ async def get_market_schedule():
         "active_sessions": active_sessions,
         "sessions": sessions_ist,
         "active_pairs": list(get_current_session_pairs()),
-        "is_gap": len(active_sessions) == 0
+        "is_gap": len(active_sessions) == 0,
+        "amd_phases": amd_phases,
+        "current_phase": current_phase
     }
 
 

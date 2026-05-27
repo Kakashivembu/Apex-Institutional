@@ -1,65 +1,5 @@
 [
   {
-    "timestamp": "2026-05-25T12:04:39.021875",
-    "symbol": "NZDUSD.x",
-    "direction": "SHORT",
-    "entry": 0.58763,
-    "exit": 0.5875,
-    "pnl": 0.0,
-    "exit_reason": "manual",
-    "tier_reached": 0,
-    "confidence": 74,
-    "failure_class": "PROFITABLE"
-  },
-  {
-    "timestamp": "2026-05-25T12:48:53.392953",
-    "symbol": "USDJPY.x",
-    "direction": "SHORT",
-    "entry": 158.875,
-    "exit": 159.023,
-    "pnl": -0.01,
-    "exit_reason": "manual",
-    "tier_reached": 0,
-    "confidence": 72,
-    "failure_class": "UNKNOWN"
-  },
-  {
-    "timestamp": "2026-05-25T13:07:23.009219",
-    "symbol": "NZDJPY.x",
-    "direction": "SHORT",
-    "entry": 93.339,
-    "exit": 93.35,
-    "pnl": -0.0,
-    "exit_reason": "manual",
-    "tier_reached": 0,
-    "confidence": 0,
-    "failure_class": "PROFITABLE"
-  },
-  {
-    "timestamp": "2026-05-25T13:07:23.057380",
-    "symbol": "AUDJPY.x",
-    "direction": "SHORT",
-    "entry": 113.865,
-    "exit": 113.95,
-    "pnl": -0.01,
-    "exit_reason": "manual",
-    "tier_reached": 0,
-    "confidence": 0,
-    "failure_class": "WEAK_SIGNAL"
-  },
-  {
-    "timestamp": "2026-05-25T13:07:23.106701",
-    "symbol": "GBPUSD.x",
-    "direction": "SHORT",
-    "entry": 1.34751,
-    "exit": 1.34918,
-    "pnl": -0.0,
-    "exit_reason": "manual",
-    "tier_reached": 0,
-    "confidence": 0,
-    "failure_class": "PROFITABLE"
-  },
-  {
     "timestamp": "2026-05-25T13:45:26.869560",
     "symbol": "USDCHF.x",
     "direction": "SHORT",
@@ -2398,5 +2338,65 @@
     "tier_reached": 1,
     "confidence": 74,
     "failure_class": "PROFITABLE"
+  },
+  {
+    "timestamp": "2026-05-26T23:53:23.614561",
+    "symbol": "XAUUSD.x",
+    "direction": "LONG",
+    "entry": 4506.82,
+    "exit": 4495.56,
+    "pnl": -7.21,
+    "exit_reason": "sl",
+    "tier_reached": 0,
+    "confidence": 50,
+    "failure_class": "WEAK_SIGNAL"
+  },
+  {
+    "timestamp": "2026-05-26T23:53:23.677640",
+    "symbol": "USDCAD.x",
+    "direction": "SHORT",
+    "entry": 1.38122,
+    "exit": 1.38195,
+    "pnl": -0.01,
+    "exit_reason": "tp",
+    "tier_reached": 0,
+    "confidence": 50,
+    "failure_class": "WEAK_SIGNAL"
+  },
+  {
+    "timestamp": "2026-05-27T08:10:52.546907",
+    "symbol": "EURUSD.x",
+    "direction": "LONG",
+    "entry": 1.16265,
+    "exit": 1.16286,
+    "pnl": 100.32,
+    "exit_reason": "tp",
+    "tier_reached": 0,
+    "confidence": 50,
+    "failure_class": "PROFITABLE"
+  },
+  {
+    "timestamp": "2026-05-27T08:10:52.609238",
+    "symbol": "USDJPY.x",
+    "direction": "SHORT",
+    "entry": 159.278,
+    "exit": 159.258,
+    "pnl": -68.59,
+    "exit_reason": "tp",
+    "tier_reached": 0,
+    "confidence": 50,
+    "failure_class": "SPREAD_KILL"
+  },
+  {
+    "timestamp": "2026-05-27T08:10:52.670047",
+    "symbol": "GBPJPY.x",
+    "direction": "SHORT",
+    "entry": 214.125,
+    "exit": 214.4,
+    "pnl": -752.4,
+    "exit_reason": "sl",
+    "tier_reached": 0,
+    "confidence": 50,
+    "failure_class": "WEAK_SIGNAL"
   }
 ]

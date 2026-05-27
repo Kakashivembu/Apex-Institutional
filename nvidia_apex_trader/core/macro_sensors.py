@@ -582,16 +582,25 @@ def build_footprint_profile(symbol: str, lookback_minutes: int = 5) -> str:
     except Exception as e:
         return f"[FOOTPRINT] Error: {e}"
 
-def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> str:
+def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> dict:
     """
-    Detects the Asian Range (00:00 to 06:00 broker time) for the most recent day in the provided candles.
-    Checks if the current price is sweeping the high or low of this range.
-    Returns a string describing the AMD pattern context.
+    Detects the Asian Range (00:00 to 06:00 broker time) for the most recent day.
+    Returns a structured dict for the AMD Phase state machine.
     """
     from datetime import datetime
     
+    result = {
+        "is_valid": False,
+        "asian_high": 0.0,
+        "asian_low": 0.0,
+        "is_sweeping_high": False,
+        "is_sweeping_low": False,
+        "phase": "UNKNOWN",
+        "description": "Range Unknown - Insufficient Data"
+    }
+
     if not candles or len(candles) < 6:
-        return "Range Unknown - Insufficient Data"
+        return result
         
     # Get the latest day from the last candle
     last_time = candles[-1].get("time_str", "")
@@ -600,7 +609,8 @@ def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> s
         if ts > 0:
             last_time = datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
         else:
-            return "Range Unknown - Invalid Time Data"
+            result["description"] = "Range Unknown - Invalid Time Data"
+            return result
             
     try:
         last_dt = datetime.strptime(last_time, "%Y-%m-%d %H:%M")
@@ -608,7 +618,8 @@ def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> s
         try:
             last_dt = datetime.fromisoformat(last_time)
         except ValueError:
-            return "Range Unknown - Invalid Time Format"
+            result["description"] = "Range Unknown - Invalid Time Format"
+            return result
             
     target_date = last_dt.date()
     
@@ -633,6 +644,7 @@ def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> s
             except ValueError:
                 continue
                 
+        # 00:00 to 06:00 broker time = Asian Session
         if dt.date() == target_date and 0 <= dt.hour < 6:
             high = float(c.get("high", 0))
             low = float(c.get("low", 0))
@@ -641,15 +653,33 @@ def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> s
             found_candles += 1
             
     if found_candles == 0:
-        return "Range Unknown - No 00:00-06:00 candles found for current day"
+        result["description"] = "Range Unknown - No 00:00-06:00 candles found for current day"
+        return result
         
-    if current_price > asian_high:
-        return f"PRICE IS SWEEPING ASIAN HIGHS ({asian_high}) - ANTICIPATE BEARISH REVERSAL (Distribution Phase)"
-    elif current_price < asian_low:
-        return f"PRICE IS SWEEPING ASIAN LOWS ({asian_low}) - ANTICIPATE BULLISH REVERSAL (Distribution Phase)"
+    result["is_valid"] = True
+    result["asian_high"] = asian_high
+    result["asian_low"] = asian_low
+    
+    # Determine AMD Phase
+    current_hour = last_dt.hour
+    if 0 <= current_hour < 6:
+        result["phase"] = "ACCUMULATION"
+        result["description"] = f"PHASE 1 (ACCUMULATION): Inside Asian Range (High: {asian_high:.5f}, Low: {asian_low:.5f})"
     else:
-        return f"Inside Asian Range / Standard PA (High: {asian_high}, Low: {asian_low})"
+        # Check for sweeps (Manipulation)
+        if current_price > asian_high:
+            result["is_sweeping_high"] = True
+            result["phase"] = "MANIPULATION"
+            result["description"] = f"PHASE 2 (MANIPULATION): Sweeping Asian High ({asian_high:.5f}) - Watch for Bearish Distribution"
+        elif current_price < asian_low:
+            result["is_sweeping_low"] = True
+            result["phase"] = "MANIPULATION"
+            result["description"] = f"PHASE 2 (MANIPULATION): Sweeping Asian Low ({asian_low:.5f}) - Watch for Bullish Distribution"
+        else:
+            result["phase"] = "DISTRIBUTION"
+            result["description"] = f"PHASE 3 (DISTRIBUTION): Trading within/beyond range after Asia. (High: {asian_high:.5f}, Low: {asian_low:.5f})"
 
+    return result
 
 # =============================================================================
 # HTF TREND BIAS GATE â€” H1 EMA20 vs EMA50 (mandatory pre-entry filter)
