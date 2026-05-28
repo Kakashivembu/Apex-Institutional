@@ -1211,56 +1211,33 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
             
             print(f"[SCALPER-RSI] RSI(3)={rsi_3:.1f} | OFI={ofi_value} | 1m_Score={score_1m} | Trend={trend_score} | Last_Bearish={last_candle_bearish} | Last_Bullish={last_candle_bullish}")
             
-            # ── DECISION ENGINE: Sniper Pullback Entry ──
-            if trend_score >= 10:
-                # Bullish trend detected — looking for LONG entry
-                if bearish_choch:
-                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Blocked by Bearish CHoCH (RSI={rsi_3:.1f})"}
-                
-                # OFI DIVERGENCE: Don't buy when sellers are aggressive
-                if ofi_value < -200:
-                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: OFI Divergence — sellers aggressive ({ofi_value}), waiting for exhaustion"}
-                
-                # RSI PULLBACK FILTER: Wait for oversold micro-dip (RSI < 30 = local trough)
-                if rsi_3 > 30 and rsi_3 < 70:
-                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Waiting for RSI(3) pullback to <30 for optimal LONG entry (RSI={rsi_3:.1f})"}
-                
-                # RSI < 30 = oversold micro-dip — perfect LONG entry at the trough
-                if rsi_3 <= 30:
-                    # Confirmation: last candle should be bullish (bounce starting)
-                    if last_candle_bullish or rsi_3 < 20:
-                        return {"decision": "BUY", "confidence": 100, "reasoning": f"Sniper Scalper: LONG at micro-trough! RSI(3)={rsi_3:.1f} (oversold), OFI={ofi_value}, Trend={trend_score}"}
-                    else:
-                        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: RSI oversold but no bullish confirmation candle yet (RSI={rsi_3:.1f})"}
-                
+            # ── LAYER 4: SMC Zones ──
+            is_discount = "Zone: DISCOUNT" in market_data_text
+            is_premium = "Zone: PREMIUM" in market_data_text
 
-                return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Bullish but RSI neutral ({rsi_3:.1f}), waiting..."}
-                
-            elif trend_score <= -10:
-                # Bearish trend detected — looking for SHORT entry
-                if bullish_choch:
-                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Blocked by Bullish CHoCH (RSI={rsi_3:.1f})"}
-                
-                # OFI DIVERGENCE: Don't sell when buyers are aggressive
+            # ── MICRO-TREND CALCULATION ──
+            # For aggressive scalping, we ignore 1H/4H macro trends and only look at immediate momentum.
+            score_5m = per_tf.get("5m", 0)
+            scalper_trend = (score_1m * 0.6) + (score_5m * 0.4)
+            
+            # ── DECISION ENGINE: Hyper-Aggressive Momentum Scalper ──
+            # LONG SCENARIO (Aggressive Buying Momentum)
+            if scalper_trend > -10:  # Micro-trend is not heavily bearish
                 if ofi_value > 200:
-                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: OFI Divergence — buyers aggressive ({ofi_value}), waiting for exhaustion"}
-                
-                # RSI PULLBACK FILTER: Wait for overbought micro-bounce (RSI > 70 = local peak)
-                if rsi_3 > 30 and rsi_3 < 70:
-                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Waiting for RSI(3) bounce to >70 for optimal SHORT entry (RSI={rsi_3:.1f})"}
-                
-                # RSI > 70 = overbought micro-bounce — perfect SHORT entry at the peak
-                if rsi_3 >= 70:
-                    # Confirmation: last candle should be bearish (rejection starting)
-                    if last_candle_bearish or rsi_3 > 80:
-                        return {"decision": "SELL", "confidence": 100, "reasoning": f"Sniper Scalper: SHORT at micro-peak! RSI(3)={rsi_3:.1f} (overbought), OFI={ofi_value}, Trend={trend_score}"}
+                    if rsi_3 < 70 and last_candle_bullish:
+                        return {"decision": "BUY", "confidence": 100, "reasoning": f"Aggressive Scalper: OFI Surge Buy! OFI={ofi_value}, RSI={rsi_3:.1f}, MicroTrend={scalper_trend:.1f}"}
                     else:
-                        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: RSI overbought but no bearish confirmation candle yet (RSI={rsi_3:.1f})"}
-                
-
-                return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Bearish but RSI neutral ({rsi_3:.1f}), waiting..."}
-            else:
-                return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Ranging Trend ({trend_score}), RSI(3)={rsi_3:.1f}"}
+                        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Aggressive Scalper: Waiting for Bullish Candle & RSI < 70 (RSI={rsi_3:.1f}, Bullish={last_candle_bullish})"}
+            
+            # SHORT SCENARIO (Aggressive Selling Momentum)
+            if scalper_trend < 10:   # Micro-trend is not heavily bullish
+                if ofi_value < -200:
+                    if rsi_3 > 30 and last_candle_bearish:
+                        return {"decision": "SELL", "confidence": 100, "reasoning": f"Aggressive Scalper: OFI Surge Sell! OFI={ofi_value}, RSI={rsi_3:.1f}, MicroTrend={scalper_trend:.1f}"}
+                    else:
+                        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Aggressive Scalper: Waiting for Bearish Candle & RSI > 30 (RSI={rsi_3:.1f}, Bearish={last_candle_bearish})"}
+            
+            return {"decision": "HOLD", "confidence": 0, "reasoning": f"Aggressive Scalper: Waiting for OFI Momentum Surge... (Current OFI={ofi_value})"}
         await asyncio.sleep(1.0) # Stagger
         return await call_hermes_gateway({"messages": [{"role": "user", "content": scalper_prompt}]}, broadcast_callback, session_name="apex_scalper", fast_mode=is_scalping)
 

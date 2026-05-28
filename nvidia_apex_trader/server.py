@@ -1504,7 +1504,11 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                                     limit_price = mark_price
                                     print(f"[LIMIT-DEBUG] SCALPER MODE: No ATR data. Forcing LIMIT order at current price {limit_price}")
                             
-                        is_limit = limit_price > 0 and ((action == "LONG" and limit_price <= mark_price) or (action == "SHORT" and limit_price >= mark_price))
+                        # Aggressive Scalper Mode must use Market Orders to catch instant momentum
+                        if SCALPER_MODE:
+                            is_limit = False
+                        else:
+                            is_limit = limit_price > 0 and ((action == "LONG" and limit_price <= mark_price) or (action == "SHORT" and limit_price >= mark_price))
 
                         print(f"[LIMIT-DEBUG] limit_price: {limit_price} | mark_price: {mark_price} | is_limit: {is_limit}")
 
@@ -1940,30 +1944,11 @@ async def step_trailing_loop():
                             move_pct = ((entry_price - peak) / entry_price) * 100
                             
                         # ============================================================
-                        # SCALPER MODE: AGGRESSIVE M1 REVERSAL SECURE BAG
+                        # SCALPER MODE: AGGRESSIVE M1 REVERSAL SECURE BAG (REMOVED)
                         # ============================================================
-                        current_points = (mark_price - entry_price) if side == "long" else (entry_price - mark_price)
-                        # Require at least $0.80 (8 pips) of ACTIVE profit to ensure we clear spread/commissions
-                        if SCALPER_MODE and current_points >= 0.8:
-                            import MetaTrader5 as _mt5_m1
-                            rates = _mt5_m1.copy_rates_from_pos(symbol, _mt5_m1.TIMEFRAME_M1, 0, 1)
-                            if rates is not None and len(rates) > 0:
-                                m1_open = rates[0]['open']
-                                m1_close = rates[0]['close']
-                                reversal_detected = False
-                                
-                                # Check if candle color flipped against our position
-                                if side == "long" and mark_price < m1_open:
-                                    reversal_detected = True # Red candle forming
-                                elif side == "short" and mark_price > m1_open:
-                                    reversal_detected = True # Green candle forming
-                                    
-                                if reversal_detected:
-                                    print(f"[SCALPER SECURE BAG] M1 Reversal Detected! Securing full max margin profit for {symbol} at {mark_price}")
-                                    from core.mt5_engine import close_mt5_position
-                                    await close_mt5_position(int(product_id), symbol=symbol, volume=state["size"], side=side)
-                                    continue # Skip standard math trail since we are closing the trade
-                        
+                        # The hyper-sensitive 1-tick candle color reversal logic was removed.
+                        # We now rely exclusively on the robust Step-Trail and SMC Sweep defense 
+                        # to ensure winners are allowed to run to Take Profit.
                         # ============================================================
                         # UNIFIED TRAIL DECISION ENGINE
                         # Calculates BOTH math-tier SL and AI-trap SL candidates,
