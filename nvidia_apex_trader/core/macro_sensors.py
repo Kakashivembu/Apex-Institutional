@@ -644,13 +644,21 @@ def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> d
             except ValueError:
                 continue
                 
-        # 00:00 to 06:00 broker time = Asian Session
-        if dt.date() == target_date and 0 <= dt.hour < 6:
+        if dt.date() == target_date:
             high = float(c.get("high", 0))
             low = float(c.get("low", 0))
-            if high > asian_high: asian_high = high
-            if low < asian_low: asian_low = low
-            found_candles += 1
+            
+            # 00:00 to 06:00 broker time = Asian Session
+            if 0 <= dt.hour < 6:
+                if high > asian_high: asian_high = high
+                if low < asian_low: asian_low = low
+                found_candles += 1
+            else:
+                # Post-Asian session (London/NY)
+                if high > asian_high:
+                    result["is_sweeping_high"] = True
+                if low < asian_low:
+                    result["is_sweeping_low"] = True
             
     if found_candles == 0:
         result["description"] = "Range Unknown - No 00:00-06:00 candles found for current day"
@@ -666,7 +674,8 @@ def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> d
         result["phase"] = "ACCUMULATION"
         result["description"] = f"PHASE 1 (ACCUMULATION): Inside Asian Range (High: {asian_high:.5f}, Low: {asian_low:.5f})"
     else:
-        # Check for sweeps (Manipulation)
+        # Check for sweeps (Manipulation vs Distribution)
+        # We now have historical sweep memory from the loop above.
         if current_price > asian_high:
             result["is_sweeping_high"] = True
             result["phase"] = "MANIPULATION"
@@ -677,7 +686,8 @@ def detect_asian_range(candles: list, current_price: float, atr: float = 0) -> d
             result["description"] = f"PHASE 2 (MANIPULATION): Sweeping Asian Low ({asian_low:.5f}) - Watch for Bullish Distribution"
         else:
             result["phase"] = "DISTRIBUTION"
-            result["description"] = f"PHASE 3 (DISTRIBUTION): Trading within/beyond range after Asia. (High: {asian_high:.5f}, Low: {asian_low:.5f})"
+            dist_type = "Bearish" if result["is_sweeping_high"] else ("Bullish" if result["is_sweeping_low"] else "Ranging")
+            result["description"] = f"PHASE 3 (DISTRIBUTION): {dist_type} Distribution back inside range. (High: {asian_high:.5f}, Low: {asian_low:.5f})"
 
     return result
 

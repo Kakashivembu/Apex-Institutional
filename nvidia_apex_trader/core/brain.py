@@ -969,7 +969,7 @@ async def _clean_json_response(content: str) -> dict:
             }
         return None
 
-async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_name="apex_trader") -> dict:
+async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_name="apex_trader", fast_mode=False) -> dict:
     """
     Loops through the multi-tier fallback architecture.
     """
@@ -1001,6 +1001,36 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
     
     skills_path = "/mnt/f/NEW NVdia Apex Ultimate/.agent/skills.md"
     
+    if fast_mode:
+        print(f"[{session_name.upper()}] FAST MODE ACTIVE. Routing directly to LM Studio...")
+        import urllib.request, json
+        try:
+            req = urllib.request.Request(
+                'http://127.0.0.1:1234/v1/chat/completions',
+                data=json.dumps({
+                    'model': 'bartowski/meta-llama-3.1-8b-instruct',
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'temperature': 0.1,
+                    'max_tokens': 800
+                }).encode(),
+                headers={'Content-Type': 'application/json'}
+            )
+            fb_response = urllib.request.urlopen(req, timeout=10).read().decode()
+            fb_data = json.loads(fb_response)
+            content = fb_data['choices'][0]['message']['content']
+            result = await _clean_json_response(content)
+            if broadcast_callback and result:
+                await broadcast_callback({
+                    "type": "hermes_activity",
+                    "agent_status": "complete",
+                    "message": f"Evaluation complete via Fast Swarm.",
+                    "reasoning": f"Final Decision: {result.get('decision', 'UNKNOWN')} | Confidence: {result.get('confidence', 0)}%"
+                })
+            return result if result else {"decision": "HOLD", "confidence": 0, "reasoning": "Failed to parse final JSON output"}
+        except Exception as fb_err:
+            print(f"[{session_name.upper()}] FAST LOCAL FALLBACK Failed: {fb_err}")
+            return {"decision": "HOLD", "confidence": 0, "reasoning": f"All AI layers failed: {fb_err}"}
+
     try:
         import subprocess
         creationflags = 0
@@ -1067,7 +1097,7 @@ async def call_hermes_gateway(payload: dict, broadcast_callback=None, session_na
         return {"decision": "HOLD", "confidence": 0, "reasoning": f"Hermes WSL CLI Exception: {str(e)}"}
 
 
-async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None, smc_data: dict = None, trading_mode: str = "challenge") -> dict:
+async def evaluate_market(memory_text: str, market_data_text: str, margin: float = 0, dom_data: str = "", active_positions: list = None, force_run: bool = False, active_symbol: str = "GOLD", live_asset_price: float = 0.0, broadcast_callback=None, smc_data: dict = None, trading_mode: str = "challenge", is_scalping: bool = False) -> dict:
     """
     Master evaluator using the Single Continuous Hermes Pipeline.
     Combines all context (Fundamental, Macro, Scalping DOM) into one prompt.
@@ -1114,21 +1144,48 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
     scalper_prompt = f"""You are Antigravity SCALPER, the Orderbook DOM Agent.
 Asset: {symbol} | Live Price: {live_asset_price}
 DOM Data: {dom_data}
-Task: Analyze Level 2 Orderbook imbalances (OFI, VPIN) and the Tick Footprint for sniper entry points. CRITICAL: If the AMD Phase shows MANIPULATION (sweep of Asian Range), watch for VPIN going non-toxic and OFI flipping in the reversal direction. This is the institutional re-entry signal. Only vote BUY/SELL when order flow confirms the reversal.
+Task: Analyze Level 2 Orderbook imbalances (OFI, VPIN) and the Tick Footprint for sniper entry points. CRITICAL: If the AMD Phase shows MANIPULATION (sweep of Asian Range), watch for VPIN going non-toxic and OFI flipping in the reversal direction. This is the institutional re-entry signal. If Phase 3 (DISTRIBUTION), confirm the momentum is carrying price away from the Asian Range with aggressive OFI in the trend direction. Only vote BUY/SELL when order flow confirms the move.
 Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "entry_price": <float>, "reasoning": "..."}}"""
 
     # Launch the parallel swarm
     async def run_claw():
+        if is_scalping:
+            return {"decision": "HOLD", "confidence": 0, "reasoning": "Bypassed for Scalper Fast Mode"}
         payload = {"messages": [{"role": "user", "content": claw_prompt}]}
         return await call_hermes_gateway(payload, broadcast_callback, session_name="apex_claw")
 
     async def run_macro():
+        if is_scalping:
+            return {"decision": "HOLD", "confidence": 0, "reasoning": "Bypassed for Scalper Fast Mode"}
         await asyncio.sleep(0.5) # Stagger
         return await call_hermes_gateway({"messages": [{"role": "user", "content": macro_prompt}]}, broadcast_callback, session_name="apex_macro")
 
     async def run_scalper():
+        if is_scalping:
+            trend_data = compute_trend_bias(market_data_text)
+            trend_score = trend_data.get("score", 0)
+            scores = trend_data.get("scores", {})
+            score_1m = scores.get("1m", 0)
+            
+            bullish_choch = "BULLISH BOS/CHoCH" in market_data_text
+            bearish_choch = "BEARISH BOS/CHoCH" in market_data_text
+
+            if trend_score >= 10:
+                if bearish_choch:
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": "Pure Math Scalper: Blocked by Bearish CHoCH"}
+                if score_1m < -15:
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Pure Math Scalper: Blocked by 1m Pullback ({score_1m})"}
+                return {"decision": "BUY", "confidence": 100, "reasoning": f"Pure Math Scalper: Bullish Trend ({trend_score})"}
+            elif trend_score <= -10:
+                if bullish_choch:
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": "Pure Math Scalper: Blocked by Bullish CHoCH"}
+                if score_1m > 15:
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": f"Pure Math Scalper: Blocked by 1m Pullback ({score_1m})"}
+                return {"decision": "SELL", "confidence": 100, "reasoning": f"Pure Math Scalper: Bearish Trend ({trend_score})"}
+            else:
+                return {"decision": "HOLD", "confidence": 0, "reasoning": f"Pure Math Scalper: Ranging Trend ({trend_score})"}
         await asyncio.sleep(1.0) # Stagger
-        return await call_hermes_gateway({"messages": [{"role": "user", "content": scalper_prompt}]}, broadcast_callback, session_name="apex_scalper")
+        return await call_hermes_gateway({"messages": [{"role": "user", "content": scalper_prompt}]}, broadcast_callback, session_name="apex_scalper", fast_mode=is_scalping)
 
     if broadcast_callback:
         coro = broadcast_callback({
@@ -1154,9 +1211,18 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
         return 0.0
 
     # Weights: CLAW (50%), MACRO (25%), SCALPER (25%)
-    net_score = (score_decision(claw_dec) * 0.50) + \
-                (score_decision(macro_dec) * 0.25) + \
-                (score_decision(scalper_dec) * 0.25)
+    if is_scalping:
+        net_score = score_decision(scalper_dec) * 1.0
+        avg_conf = safe_int(scalper_res.get("confidence", 0), 0, 0, 100)
+    else:
+        net_score = (score_decision(claw_dec) * 0.50) + \
+                    (score_decision(macro_dec) * 0.25) + \
+                    (score_decision(scalper_dec) * 0.25)
+        avg_conf = (
+            safe_int(claw_res.get("confidence", 0), 0, 0, 100) +
+            safe_int(macro_res.get("confidence", 0), 0, 0, 100) +
+            safe_int(scalper_res.get("confidence", 0), 0, 0, 100)
+        ) // 3
     
     # Thresholds: +/- 0.40 required to override HOLD
     if net_score >= 0.40:
@@ -1165,12 +1231,6 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
         final_decision = "SELL"
     else:
         final_decision = "HOLD"
-
-    avg_conf = (
-        safe_int(claw_res.get("confidence", 0), 0, 0, 100) +
-        safe_int(macro_res.get("confidence", 0), 0, 0, 100) +
-        safe_int(scalper_res.get("confidence", 0), 0, 0, 100)
-    ) // 3
 
     sl_pct, tp_pct, _ = clamp_risk_to_symbol(symbol, claw_res.get("stop_loss_pct", risk_profile["sl"]), claw_res.get("take_profit_pct", risk_profile["tp"]))
     

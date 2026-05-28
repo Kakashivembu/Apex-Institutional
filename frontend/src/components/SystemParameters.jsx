@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Settings, Save, RotateCcw, Shield, AlertTriangle, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { Settings, Save, RotateCcw, Shield, AlertTriangle, CheckCircle2, XCircle, Loader2, Target } from 'lucide-react';
 import { API_BASE } from '../lib/api';
 
 const FOREX_DEFAULTS = {
@@ -15,6 +15,7 @@ const FOREX_DEFAULTS = {
   auto_rebalance: true,
   stop_loss_enabled: true,
   take_profit_enabled: true,
+  scalper_mode: false,
 };
 
 const CRYPTO_DEFAULTS = {
@@ -30,6 +31,7 @@ const CRYPTO_DEFAULTS = {
   auto_rebalance: true,
   stop_loss_enabled: true,
   take_profit_enabled: true,
+  scalper_mode: false,
 };
 
 const SystemParameters = ({ wsConnected }) => {
@@ -362,6 +364,41 @@ const SystemParameters = ({ wsConnected }) => {
                   </p>
                 )}
               </div>
+            </div>
+          </div>
+
+          {/* ── London Scalper Mode ── */}
+          <div className="border-t border-white/5 pt-6">
+            <div className="flex items-center space-x-2 mb-4">
+              <Target className="w-5 h-5 text-fuchsia-400" />
+              <h3 className="text-lg font-semibold text-white">London Scalper Mode</h3>
+            </div>
+            
+            <div className="p-5 bg-fuchsia-900/10 border border-fuchsia-500/20 rounded-2xl space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-white font-bold">Enable Scalper Mode (Phase 2 Override)</p>
+                  <p className="text-xs text-fuchsia-300/70 mt-1 max-w-sm">
+                    Forces bot to fire on London sweeps using max optimized margin sizing. Take Profit is a hard dollar amount.
+                  </p>
+                </div>
+                <button
+                  onClick={() => handleToggle('scalper_mode')}
+                  className={`w-14 h-7 rounded-full transition-colors flex items-center ${params.scalper_mode ? 'bg-fuchsia-500' : 'bg-slate-700'}`}
+                >
+                  <div className={`w-5 h-5 rounded-full bg-white transform transition-transform ${params.scalper_mode ? 'translate-x-8' : 'translate-x-1'}`} />
+                </button>
+              </div>
+
+              {params.scalper_mode && (
+                <div className="space-y-6 pt-4 border-t border-fuchsia-500/20">
+                  <div className="bg-rose-500/10 p-3 rounded-xl border border-rose-500/30">
+                    <p className="text-[11px] text-rose-300 font-bold flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5" /> DANGER: Uses 90% of free margin! Aggressive secure-bag trailing is active.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

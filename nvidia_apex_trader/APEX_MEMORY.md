@@ -1,23 +1,5 @@
 APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 
-- [05/26 11:05] **BAD_TIMING** BTCUSD.x SHORT lost $250.79 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 11:11] **UNKNOWN** GBPJPY.x LONG lost $0.01 (exit: tp)
-- [05/26 11:11] **UNKNOWN** GBPJPY.x LONG lost $0.01 (exit: tp)
-- [05/26 11:11] **UNKNOWN** GBPJPY.x LONG lost $0.01 (exit: tp)
-- [05/26 11:19] **BAD_TIMING** XAUUSD.x SHORT lost $1.71 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 11:19] **BAD_TIMING** XAUUSD.x SHORT lost $3.54 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 13:49] **UNKNOWN** GBPJPY.x SHORT lost $2.09 (exit: tp)
-- [05/26 14:53] **SPREAD_KILL** XAUUSD.x LONG lost $2.93 (exit: tp) → Avoid entries during low-liquidity periods
-- [05/26 15:16] **BAD_TIMING** NAS100.x SHORT lost $70.00 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 15:55] **BAD_TIMING** BTCUSD.x SHORT lost $494.52 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 15:57] **BAD_TIMING** NAS100.x SHORT lost $69.05 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 16:05] **BAD_TIMING** BTCUSD.x SHORT lost $708.88 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 17:05] **BAD_TIMING** XAUUSD.x LONG lost $7.37 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 17:58] **BAD_TIMING** XAUUSD.x LONG lost $7.34 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 18:10] **BAD_TIMING** NAS100.x SHORT lost $104.26 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 18:40] **BAD_TIMING** BTCUSD.x SHORT lost $69.52 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 19:23] **UNKNOWN** USDJPY.x SHORT lost $0.54 (exit: tp)
-- [05/26 19:24] **BAD_TIMING** XAUUSD.x LONG lost $8.53 (exit: sl) → Wait for deeper pullback before entry
 - [05/26 19:30] **UNKNOWN** GBPJPY.x SHORT lost $0.22 (exit: tp)
 - [05/26 20:32] **BAD_TIMING** XAUUSD.x LONG lost $5.85 (exit: sl) → Wait for deeper pullback before entry
 - [05/26 21:47] **BAD_TIMING** XAUUSD.x LONG lost $7.14 (exit: sl) → Wait for deeper pullback before entry
@@ -25,3 +7,21 @@ APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 - [05/26 23:53] **WEAK_SIGNAL** USDCAD.x SHORT lost $0.01 (exit: tp) → Only enter when AI confidence ≥ 70%
 - [05/27 08:10] **SPREAD_KILL** USDJPY.x SHORT lost $68.59 (exit: tp) → Avoid entries during low-liquidity periods
 - [05/27 08:10] **WEAK_SIGNAL** GBPJPY.x SHORT lost $752.40 (exit: sl) → Only enter when AI confidence ≥ 70%
+- [05/27 12:05] **WEAK_SIGNAL** XAUUSD.x LONG lost $42.74 (exit: sl) → Only enter when AI confidence ≥ 70%
+- [05/27 12:13] **WEAK_SIGNAL** XAUUSD.x LONG lost $43.58 (exit: sl) → Only enter when AI confidence ≥ 70%
+- [05/27 13:33] **WEAK_SIGNAL** XAUUSD.x LONG lost $43.01 (exit: sl) → Only enter when AI confidence ≥ 70%
+- [05/27 14:10] **UNKNOWN** XAUUSD.x SHORT lost $13.71 (exit: tp)
+- [05/27 14:12] **WEAK_SIGNAL** XAUUSD.x SHORT lost $13.35 (exit: tp) → Only enter when AI confidence ≥ 70%
+- [05/27 15:17] **UNKNOWN** XAUUSD.x SHORT lost $13.43 (exit: tp)
+- [05/27 15:51] **SPREAD_KILL** XAUUSD.x SHORT lost $4.46 (exit: tp) → Avoid entries during low-liquidity periods
+- [05/27 16:18] **BAD_TIMING** XAUUSD.x SHORT lost $22.35 (exit: sl) → Wait for deeper pullback before entry
+- [05/27 16:26] **UNKNOWN** XAUUSD.x SHORT lost $13.67 (exit: tp)
+- [05/27 17:22] **UNKNOWN** XAUUSD.x SHORT lost $16.17 (exit: tp)
+- [05/27 19:21] **UNKNOWN** XAUUSD.x SHORT lost $3.84 (exit: tp)
+- [05/27 19:24] **UNKNOWN** USDJPY.x SHORT lost $1.20 (exit: tp)
+- [05/27 19:43] **WEAK_SIGNAL** GBPJPY.x SHORT lost $2.71 (exit: tp) → Only enter when AI confidence ≥ 70%
+- [05/27 20:07] **UNKNOWN** GBPJPY.x SHORT lost $3.39 (exit: tp)
+- [05/27 20:29] **SPREAD_KILL** XAUUSD.x SHORT lost $3.82 (exit: tp) → Avoid entries during low-liquidity periods
+- [05/27 21:13] **UNKNOWN** XAUUSD.x SHORT lost $13.74 (exit: tp)
+- [05/27 22:13] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.04 (exit: sl) → Only enter when AI confidence ≥ 70%
+- [05/27 22:13] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.04 (exit: tp) → Only enter when AI confidence ≥ 70%

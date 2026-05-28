@@ -100,6 +100,7 @@ def detect_broker_from_server(server_name: str) -> str:
     return "xmglobal"  # Safe default
 
 _current_broker_id = "xmglobal"
+SCALPER_MODE = False
 
 def reload_target_symbols():
     """Re-detect broker from active MT5 account and update TARGET_SYMBOLS.
@@ -120,6 +121,9 @@ def reload_target_symbols():
         TARGET_SYMBOLS = new_symbols
     else:
         TARGET_SYMBOLS = BROKER_SYMBOL_MAPS["xmglobal"]
+        
+    if SCALPER_MODE:
+        TARGET_SYMBOLS = [sym for sym in TARGET_SYMBOLS if "XAU" in sym.upper() or "GOLD" in sym.upper()]
 
 # Initialize TARGET_SYMBOLS from the active account at startup
 TARGET_SYMBOLS = BROKER_SYMBOL_MAPS["xmglobal"]  # Default until first reload
@@ -186,6 +190,9 @@ FLEET_SCAN_DELAY = 10
 FLEET_INTER_SYMBOL_DELAY = 5.5  # Throttle to 5.5s per symbol (3 calls) to stay under NVIDIA 40 RPM limit
 MAX_OPEN_POSITIONS = 8
 MAX_POSITIONS_PER_SYMBOL = 2  # Hard cap: max open positions allowed per individual symbol
+GLOBAL_COOLDOWN_MINUTES = 30  # Wait time after a losing trade before re-entering same symbol
+
+# Scalper Mode Globals
 
 last_positions = []
 last_market_data = {}  # Stores latest MT5 price data + sentiment for autopsy context
@@ -250,32 +257,36 @@ def calculate_dynamic_lot_size(symbol, current_price, stop_loss_price, account_e
     Calculates exact lot size based on a fixed percentage of account equity and distance to Stop Loss.
     """
     import MetaTrader5 as mt5
-    
-    # 1. Calculate Dollar Risk (e.g., 2% of $85 = $1.70)
-    dollar_risk = account_equity * risk_pct
+    global SCALPER_MODE
     
     symbol_info = mt5.symbol_info(symbol)
     if not symbol_info:
         return 0.01
         
-    # 2. Calculate Stop Loss distance in Points
-    sl_distance_points = abs(current_price - stop_loss_price) / symbol_info.point
-    
-    # 3. Get Point Value (Tick Value) in USD
-    tick_value = symbol_info.trade_tick_value
-    tick_size = symbol_info.trade_tick_size
-    
-    # If symbol info fails, fallback to micro lot
-    if sl_distance_points == 0 or tick_value == 0 or tick_size == 0:
-        return 0.01
+    # In Scalper Mode, we bypass standard risk and target maximum safe margin utilization (90%)
+    if SCALPER_MODE:
+        raw_lot_size = 9999.0  # Absurdly high initial value to force the margin cap to trigger
+    else:
+        # 1. Calculate Dollar Risk (e.g., 2% of $85 = $1.70)
+        dollar_risk = account_equity * risk_pct
         
-    point_value = (tick_value / tick_size) * symbol_info.point
-    if point_value == 0:
-        return 0.01
+        # 2. Calculate Stop Loss distance in Points
+        sl_distance_points = abs(current_price - stop_loss_price) / symbol_info.point
         
-    # 4. Calculate Raw Lot Size
-    # Formula: Lots = Dollar Risk / (SL Distance in Points * Point Value)
-    raw_lot_size = dollar_risk / (sl_distance_points * point_value)
+        # 3. Get Point Value (Tick Value) in USD
+        tick_value = symbol_info.trade_tick_value
+        tick_size = symbol_info.trade_tick_size
+        
+        # If symbol info fails, fallback to micro lot
+        if sl_distance_points == 0 or tick_value == 0 or tick_size == 0:
+            return 0.01
+            
+        point_value = (tick_value / tick_size) * symbol_info.point
+        if point_value == 0:
+            return 0.01
+            
+        # 4. Calculate Raw Lot Size
+        raw_lot_size = dollar_risk / (sl_distance_points * point_value)
     
     # 4.5. Margin Constraint Check
     # Prevent "No money" errors by capping lot size to 90% of available FREE margin
@@ -285,7 +296,7 @@ def calculate_dynamic_lot_size(symbol, current_price, stop_loss_price, account_e
         available_margin = account_info.margin_free if account_info else account_equity
         max_lot_by_margin = (available_margin * 0.90) / margin_for_one_lot
         if raw_lot_size > max_lot_by_margin:
-            print(f"[RISK] Margin Cap active: {raw_lot_size:.2f} lots requires too much margin. Capped at {max_lot_by_margin:.2f} lots (Free Margin: ${available_margin:.2f}).")
+            print(f"[RISK] Margin Cap active: Capped at {max_lot_by_margin:.2f} lots (Free Margin: ${available_margin:.2f}).")
             raw_lot_size = max_lot_by_margin
     
     # 5. Clamp to MT5 Broker Limits
@@ -296,8 +307,8 @@ def calculate_dynamic_lot_size(symbol, current_price, stop_loss_price, account_e
     # Round down to nearest step to stay within risk limits
     adjusted_lot_size = int(raw_lot_size / step_lot) * step_lot
     
-    # 6. Safety Net: Hard Widowmaker limit for micro accounts
-    if account_equity < 1000:
+    # 6. Safety Net: Hard Widowmaker limit for micro accounts (bypassed in Scalper Mode)
+    if not SCALPER_MODE and account_equity < 1000:
         max_lot = min(max_lot, 0.10)
         
     return max(min_lot, min(adjusted_lot_size, max_lot))
@@ -563,6 +574,7 @@ def calculate_atr(candles: list, period: int = 14) -> float:
     return atr
 
 async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
+    global SCALPER_MODE
     """Fetch all account data. If skip_consensus=True, skips the expensive AI pipeline."""
     global last_positions, last_equity, last_swarm_decisions, last_consensus, last_margin, account_balances, last_smc_data
     
@@ -754,7 +766,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         dom_data = "DOM X-Ray: Unavailable this cycle"
         print(f"[DOM] Fetch failed (non-blocking): {dom_err}")
 
-    # â”€â”€ CANDLE TREND DATA: Restore multi-timeframe vision for AI reversal detection â”€â”€
+    # ── CANDLE TREND DATA: Restore multi-timeframe vision for AI reversal detection ──
     try:
         candle_data = await fetch_multi_timeframe([symbol])
         print(f"[CANDLES] Multi-timeframe trend data loaded")
@@ -762,14 +774,15 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         candle_data = "Candle data unavailable this cycle."
         print(f"[CANDLES] Fetch failed (non-blocking): {candle_err}")
 
-    # â”€â”€ SMC INSTITUTIONAL LEVELS: Dedicated FVG/OB summary for AI precision â”€â”€
+    # ── SMC INSTITUTIONAL LEVELS: Dedicated FVG/OB summary for AI precision ──
     smc_section = ""
     try:
-        raw_1h = await asyncio.to_thread(fetch_candles_sync, symbol, "1h", 100)
-        if raw_1h:
-            current = live_market_price or (float(raw_1h[-1].get("close", 0)) if raw_1h else 0)
-            fvg = detect_fair_value_gaps(raw_1h, current_price=current, max_lookback=100)
-            ob = detect_order_blocks(raw_1h, current_price=current, max_lookback=100)
+        smc_tf = "1m" if SCALPER_MODE else "1h"
+        raw_smc = await asyncio.to_thread(fetch_candles_sync, symbol, smc_tf, 100)
+        if raw_smc:
+            current = live_market_price or (float(raw_smc[-1].get("close", 0)) if raw_smc else 0)
+            fvg = detect_fair_value_gaps(raw_smc, current_price=current, max_lookback=100)
+            ob = detect_order_blocks(raw_smc, current_price=current, max_lookback=100)
             smc_lines = [f"=== INSTITUTIONAL SMC LEVELS ({symbol}) ==="]
             if fvg.get("nearest_bullish"):
                 nb = fvg["nearest_bullish"]
@@ -785,20 +798,23 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 smc_lines.append(f"Nearest Bearish OB (Supply): {nb['low']} to {nb['high']}")
             if len(smc_lines) > 1:
                 smc_section = "\n".join(smc_lines)
-                print(f"[SMC] Injected {len(smc_lines)-1} institutional levels into AI context")
+                print(f"[SMC] Injected {len(smc_lines)-1} institutional levels into AI context (TF: {smc_tf})")
             else:
                 smc_section = "=== INSTITUTIONAL SMC LEVELS ===\nNo valid FVGs or OBs detected in recent 100 candles."
             
             # --- ASIAN RANGE DETECTION ---
             from core.macro_sensors import detect_asian_range
-            amd_data = detect_asian_range(raw_1h, current)
+            amd_candles = await asyncio.to_thread(fetch_candles_sync, symbol, "15m", 100)
+            if not amd_candles:
+                amd_candles = raw_smc
+            amd_data = detect_asian_range(amd_candles, current)
             asian_range_str = amd_data.get("description", "")
             smc_section += f"\n\n=== ICT LIQUIDITY & AMD PATTERN ===\n{asian_range_str}"
             
             # --- LUXALGO SMC INTEGRATION ---
-            eqh_eql_str = detect_equal_highs_lows(raw_1h, atr=0, threshold_pct=0.001)
-            pd_zones_str = detect_premium_discount_zones(raw_1h, current)
-            structure_str = detect_market_structure(raw_1h, current)
+            eqh_eql_str = detect_equal_highs_lows(raw_smc, atr=0, threshold_pct=0.001)
+            pd_zones_str = detect_premium_discount_zones(raw_smc, current)
+            structure_str = detect_market_structure(raw_smc, current)
             
             luxalgo_lines = []
             if eqh_eql_str:
@@ -816,14 +832,14 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             
             # --- INSTITUTIONAL LIQUIDITY SWEEPS (JUDAS SWING) ---
             from core.macro_sensors import detect_liquidity_sweep
-            sweep = detect_liquidity_sweep(raw_1h, lookback_period=50)
+            sweep = detect_liquidity_sweep(raw_smc, lookback_period=50)
             if sweep.get("sweep_detected", False):
                 sweep_str = f"INSTITUTIONAL LIQUIDITY SWEEP DETECTED!\nDirection Bias: {sweep['direction']}\nDetails: {sweep['details']}\nOptimal SL Anchor: {sweep['stop_loss_anchor']}"
                 smc_section += f"\n\n=== 🚨 HIGH PROBABILITY SETUPS 🚨 ===\n{sweep_str}"
                 print(f"[SMC-SWEEP] {sweep['direction']} Sweep Detected! Anchor: {sweep['stop_loss_anchor']}")
             
-            _atr = calculate_atr(raw_1h, period=14)
-            _last_price = raw_1h[-1].get("close", 1) if raw_1h else 1
+            _atr = calculate_atr(raw_smc, period=14)
+            _last_price = raw_smc[-1].get("close", 1) if raw_smc else 1
             _atr_pct = (_atr / _last_price) * 100 if _last_price > 0 else 0
 
             last_smc_data[symbol] = {
@@ -894,7 +910,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             live_asset_price=live_market_price,
             broadcast_callback=manager.broadcast,
             smc_data=last_smc_data.get(symbol, {}),
-            trading_mode=current_trading_mode
+            trading_mode=current_trading_mode,
+            is_scalping=SCALPER_MODE
         )
         
         # Track NVIDIA NIM API usage (3 calls per consensus: CLAW + Macro + Scalper)
@@ -960,6 +977,12 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             
             print(f"[RISK-MANAGER] Dynamic Risk Clamping Active ({current_trading_mode.upper()}): {_asset_class} | "
                   f"UI SL: {ui_sl}% -> Clamped: {clamped_sl}% (limit: {asset_limits['max_sl']}%) | TP: {clamped_tp}%")
+                  
+            # --- PHASE 3 RISK REDUCTION ---
+            amd_phase = last_smc_data.get(symbol, {}).get("amd", {}).get("phase", "UNKNOWN")
+            if amd_phase == "DISTRIBUTION":
+                clamped_sl = round(clamped_sl * 0.5, 3)
+                print(f"[RISK-MANAGER] PHASE 3 (DISTRIBUTION) DETECTED: Slicing Stop Loss in half to {clamped_sl}% to protect account during high NY volatility.")
 
         last_consensus = {
             "direction": action,
@@ -977,12 +1000,41 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         consensus_strength = last_consensus.get("strength", 0)
         entry_blocked = False
 
+        # --- AUTO-SWITCH SCALPER MODE OFF FOR PHASE 3 ---
+        # (USER OVERRIDE: Scalper mode is highly profitable, disabled AMD auto-switch to allow all-day scalping)
+        # if SCALPER_MODE:
+        #     amd_phase = last_smc_data.get(symbol, {}).get("amd", {}).get("phase", "UNKNOWN")
+        #     if amd_phase in ("DISTRIBUTION", "MANIPULATION"):
+        #         print(f"[AUTO-SWITCH] Phase 3/Volatility ({amd_phase}) detected! Turning OFF Scalper Mode to re-enable strict institutional Gates.")
+        #         SCALPER_MODE = False
+        #         try:
+        #             import json
+        #             with open(params_file, "r") as f:
+        #                 p_data = json.load(f)
+        #             p_data["scalper_mode"] = False
+        #             with open(params_file, "w") as f:
+        #                 json.dump(p_data, f, indent=4)
+        #         except Exception:
+        #             pass
+
         # --- GATE 0: Basic pre-checks ---
         if action not in ("LONG", "SHORT"):
             entry_blocked = True
         elif not trading_enabled:
             print(f"[TRADE] Signal: {action} ({consensus_strength}%) â€” Trading DISABLED (enable from dashboard)")
             entry_blocked = True
+        else:
+            from core.brain import GLOBAL_COOLDOWNS
+            import time
+            if symbol in GLOBAL_COOLDOWNS and time.time() < GLOBAL_COOLDOWNS[symbol]:
+                remaining = int(GLOBAL_COOLDOWNS[symbol] - time.time())
+                _ps_last_dir = last_stack_direction.get(symbol, "")
+                if _ps_last_dir == "" or action == _ps_last_dir:
+                    print(f"[GATE-0] COOLDOWN ACTIVE: {symbol} is in cooldown for {remaining} more seconds (Dir: {_ps_last_dir}). Skipping entry.")
+                    entry_blocked = True
+                else:
+                    print(f"[GATE-0] COOLDOWN BYPASSED: {symbol} reversed direction ({_ps_last_dir} -> {action}).")
+                    del GLOBAL_COOLDOWNS[symbol]
 
         # --- GATE 1: Consensus Threshold ---
         # Early pullback-continuation entries can pass sooner so the bot catches
@@ -993,23 +1045,22 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             early_dir = "BUY" if action == "LONG" else "SELL"
             early_entry = get_early_trend_continuation(symbol, early_dir)
             min_consensus = 64 if early_entry.get("pass") else 70
-            if consensus_strength < min_consensus:
+            
+            # --- SCALPER MODE OVERRIDE FOR GATE 1 ---
+            if SCALPER_MODE:
+                print(f"[GATE-1] SCALPER MODE ACTIVE: Bypassing consensus threshold ({consensus_strength}%).")
+            elif consensus_strength < min_consensus:
                 print(f"[GATE-1] BLOCKED: Consensus {consensus_strength}% < {min_consensus}% threshold. Signal: {action} | Early={early_entry.get('reason')}")
                 entry_blocked = True
 
-
-        # --- GATE 1b: REMOVED — Direction agreement is handled by validate_trend_start_entry()
-        # in brain.py with improved majority-voting logic. Keeping duplicate checks
-        # caused double-blocking when LM Studio returned HOLD (abstention, not opposition).
-
-
         # --- GATE 2: Strict AMD Session / Killzone Filter ---
         if not entry_blocked:
-            # Crypto is 24/7, do not block entries based on Forex session times
-            if params.get("mode") == "crypto":
+            if SCALPER_MODE:
+                print(f"[GATE-2] SCALPER MODE ACTIVE: Bypassing Time & AMD Filters to allow aggressive entries.")
+            elif params.get("mode") == "crypto":
                 pass
             else:
-                # 1. Strict Killzone Timing Filter (No challenge mode bypass!)
+                # 1. Strict Killzone Timing Filter
                 from core.macro_sensors import get_smc_killzone
                 kz_active, kz_name = get_smc_killzone(symbol)
                 if not kz_active:
@@ -1026,7 +1077,6 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                     if amd_phase == "ACCUMULATION":
                         print(f"[GATE-2] BLOCKED: Asian Session Accumulation active. Bot is dormant, mapping liquidity boundaries.")
                         entry_blocked = True
-
         # --- MOMENTUM BREAKOUT OVERRIDE ---
         # Detect early session open breakouts to bypass slow H1 EMAs
         trend_debug = result.get("_debug", {}).get("trend_bias", {}) or {}
@@ -1069,7 +1119,15 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             h1_bias = h1_data.get("bias", "SKIP")
             htf_allows = (action == "LONG" and h1_bias == "BUY") or (action == "SHORT" and h1_bias == "SELL")
             
-            if not htf_allows and is_momentum_breakout:
+            if SCALPER_MODE:
+                # Scalper Mode MUST align with overall Weighted Trend Bias to prevent chasing dead bounces
+                if (action == "LONG" and trend_score >= -10) or (action == "SHORT" and trend_score <= 10):
+                    print(f"[GATE-3] SCALPER MODE ACTIVE: Trend bias is {trend_score}. Allowing {action} scalp.")
+                    htf_allows = True
+                else:
+                    print(f"[GATE-3] SCALPER MODE BLOCKED: Counter-trend {action} rejected. Trend Bias is {trend_score}.")
+                    htf_allows = False
+            elif not htf_allows and is_momentum_breakout:
                 print(f"[GATE-3] BYPASS: Session Open Momentum Breakout detected (Vel: {velocity_ratio:.2f}x, 5m: {score_5m:+d}). Overriding H1 bias={h1_bias}.")
                 htf_allows = True
             elif not htf_allows and consensus_strength >= consensus_threshold:
@@ -1211,6 +1269,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                 
                 async def execute_for_account(key_data):
                     """Execute trade for a single account â€” called in parallel for all accounts"""
+                    nonlocal action, stop_loss_pct, take_profit_pct
                     t_api_key = key_data.get("api_key", "")
                     t_api_secret = key_data.get("api_secret", "")
                     t_network = key_data.get("network", "india_testnet")
@@ -1233,6 +1292,14 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                             return
                         
                         symbol_positions = [p for p in (existing or []) if p.get("symbol") == symbol]
+                        
+                        # FIX RACE CONDITION: Include ghost positions from step_trail_state that might have closed in MT5 
+                        # but haven't been processed by the close detector yet.
+                        global step_trail_state
+                        for k, state in step_trail_state.items():
+                            if state.get("symbol") == symbol and str(state.get("ticket")) not in [str(p.get("ticket")) for p in symbol_positions]:
+                                symbol_positions.append(state)
+                        
                         symbol_pending = [o for o in (pending_orders or []) if o.get("symbol") == symbol]
                         total_symbol_exposure = len(symbol_positions) + len(symbol_pending)
                         
@@ -1345,7 +1412,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         print(f"[LIMIT-DEBUG] {symbol} | is_momentum: {is_momentum_breakout} | OB nearest_bearish: {bool(ob.get('nearest_bearish'))} | FVG nearest_bearish: {bool(fvg.get('nearest_bearish'))}")
                         
                         limit_price = 0.0
-                        if not is_momentum_breakout:
+                        # Try to find a sniper Limit Entry based on Order Blocks / FVGs
+                        if not is_momentum_breakout or SCALPER_MODE:
                             if action == "LONG":
                                 if ob.get("nearest_bullish"):
                                     limit_price = float(ob["nearest_bullish"]["high"])
@@ -1361,7 +1429,65 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                                     limit_price = float(fvg["nearest_bearish"]["gap_bottom"])
                                     print(f"[LIMIT-DEBUG] Picked SHORT limit_price from FVG gap_bottom: {limit_price}")
                                     
-                        is_limit = limit_price > 0 and ((action == "LONG" and limit_price < mark_price) or (action == "SHORT" and limit_price > mark_price))
+                        far_structure_rejected = False
+                        far_structure_price = 0.0
+                        # Validate limit distance
+                        if limit_price > 0:
+                            dist = abs(limit_price - mark_price)
+                            max_dist = mark_price * 0.0005 if SCALPER_MODE else mark_price * 0.002
+                            if dist > max_dist:
+                                print(f"[LIMIT-DEBUG] Rejected far Limit Order: {limit_price} (dist: {dist:.5f} > max: {max_dist:.5f})")
+                                far_structure_price = limit_price
+                                limit_price = 0.0
+                                far_structure_rejected = True
+
+                        if SCALPER_MODE and limit_price == 0.0:
+                            if far_structure_rejected:
+                                # Counter-Trend Mitigation Trade Logic
+                                smc_choch = smc.get("market_structure", "")
+                                is_valid_mitigation = False
+                                
+                                if action == "SHORT" and "BULLISH" in str(smc_choch):
+                                    is_valid_mitigation = True
+                                elif action == "LONG" and "BEARISH" in str(smc_choch):
+                                    is_valid_mitigation = True
+                                    
+                                if is_valid_mitigation:
+                                    print(f"[MITIGATION ENGINE] Far OB at {far_structure_price} acts as a magnet. LLM Verification triggered...")
+                                    from core.brain import call_hermes_gateway
+                                    prompt = f"""
+                                    The bot wanted to enter a {action} because the HTF trend is favorable. 
+                                    However, the nearest Order Block is at {far_structure_price}, which is ${dist:.2f} away from current price ({mark_price}).
+                                    The 1-minute chart has already formed a {smc_choch} structure shift towards the Order Block.
+                                    Should we take a Counter-Trend Mitigation trade (enter a {'LONG' if action == 'SHORT' else 'SHORT'} now, targeting {far_structure_price} as TP)?
+                                    Reply only with 'YES' or 'NO'.
+                                    """
+                                    # Use a fast LLM verification call
+                                    resp = await call_hermes_gateway({"messages": [{"role": "user", "content": prompt}]}, None, session_name="mitigation_check", fast_mode=True)
+                                    if "YES" in resp.get("decision", resp.get("content", "")).upper():
+                                        print(f"[MITIGATION ENGINE] LLM confirmed! Executing Counter-Trend Mitigation trade towards {far_structure_price}!")
+                                        action = "LONG" if action == "SHORT" else "SHORT"
+                                        api_side = "buy" if action == "LONG" else "sell"
+                                        # Use the far structure as the ultimate Take Profit
+                                        take_profit_pct = abs(far_structure_price - mark_price) / mark_price * 100
+                                        stop_loss_pct = 0.15 # Very tight SL for counter-trend
+                                        # Force a limit order at market price
+                                        limit_price = mark_price
+                                    else:
+                                        print(f"[TRADE:{t_account}] LLM REJECTED mitigation trade. ABORT: Reversal zone is too far away.")
+                                        return
+                                else:
+                                    if abs(trend_score) >= 40:
+                                        print(f"[MOMENTUM OVERRIDE] Trend is extremely strong ({trend_score}). Bypassing limit distance and forcing TRUE MARKET ORDER to catch the drop!")
+                                        limit_price = 0.0  # Keep limit_price 0.0 to force Market Order
+                                    else:
+                                        print(f"[TRADE:{t_account}] ABORT: Reversal zone is too far away. No confirming CHoCH for mitigation trade.")
+                                        return
+                            else:
+                                limit_price = mark_price
+                                print(f"[LIMIT-DEBUG] SCALPER MODE: No OB/FVG found. Forcing LIMIT order at current price {limit_price} to prevent slippage.")
+                            
+                        is_limit = limit_price > 0 and ((action == "LONG" and limit_price <= mark_price) or (action == "SHORT" and limit_price >= mark_price))
 
                         print(f"[LIMIT-DEBUG] limit_price: {limit_price} | mark_price: {mark_price} | is_limit: {is_limit}")
 
@@ -1615,15 +1741,17 @@ async def step_trailing_loop():
                             
                             # FIX #3: Reset stack direction lock if no more positions remain for this symbol
                             remaining_for_symbol = [p for p in open_positions if p.get("symbol") == _symbol and str(p.get("ticket", "")) != str(ticket)]
-                            if not remaining_for_symbol and _symbol in stack_direction_lock:
-                                # FIX #6: Record closed stack direction + timestamp for post-stack reentry guard
-                                last_stack_direction[_symbol] = stack_direction_lock[_symbol]
+                            if not remaining_for_symbol:
+                                if _symbol in stack_direction_lock:
+                                    # FIX #6: Record closed stack direction + timestamp for post-stack reentry guard
+                                    last_stack_direction[_symbol] = stack_direction_lock[_symbol]
+                                    del stack_direction_lock[_symbol]
+                                    print(f"[STACK-LOCK] Direction lock RESET for {_symbol} â€” no remaining positions")
+                                    
                                 from core.brain import GLOBAL_COOLDOWNS
                                 _cd_seconds = GLOBAL_COOLDOWN_MINUTES * 60
                                 GLOBAL_COOLDOWNS[str(_symbol)] = time.time() + _cd_seconds
                                 print(f"[POST-STACK] {_symbol}: Full stack closed. UI Cooldown active for {_cd_seconds}s.")
-                                del stack_direction_lock[_symbol]
-                                print(f"[STACK-LOCK] Direction lock RESET for {_symbol} â€” no remaining positions")
                             
                             await asyncio.sleep(0.02)  # Ultra-fast 20ms delay for large fleet processing
                     
@@ -1793,6 +1921,31 @@ async def step_trailing_loop():
                             move_pct = ((peak - entry_price) / entry_price) * 100
                         else:
                             move_pct = ((entry_price - peak) / entry_price) * 100
+                            
+                        # ============================================================
+                        # SCALPER MODE: AGGRESSIVE M1 REVERSAL SECURE BAG
+                        # ============================================================
+                        current_points = (mark_price - entry_price) if side == "long" else (entry_price - mark_price)
+                        # Require at least $0.80 (8 pips) of ACTIVE profit to ensure we clear spread/commissions
+                        if SCALPER_MODE and current_points >= 0.8:
+                            import MetaTrader5 as _mt5_m1
+                            rates = _mt5_m1.copy_rates_from_pos(symbol, _mt5_m1.TIMEFRAME_M1, 0, 1)
+                            if rates is not None and len(rates) > 0:
+                                m1_open = rates[0]['open']
+                                m1_close = rates[0]['close']
+                                reversal_detected = False
+                                
+                                # Check if candle color flipped against our position
+                                if side == "long" and mark_price < m1_open:
+                                    reversal_detected = True # Red candle forming
+                                elif side == "short" and mark_price > m1_open:
+                                    reversal_detected = True # Green candle forming
+                                    
+                                if reversal_detected:
+                                    print(f"[SCALPER SECURE BAG] M1 Reversal Detected! Securing full max margin profit for {symbol} at {mark_price}")
+                                    from core.mt5_engine import close_mt5_position
+                                    await close_mt5_position(int(product_id), symbol=symbol, volume=state["size"], side=side)
+                                    continue # Skip standard math trail since we are closing the trade
                         
                         # ============================================================
                         # UNIFIED TRAIL DECISION ENGINE
@@ -2752,7 +2905,10 @@ async def startup_event():
     backtest_scheduled = False
     
     # â”€â”€ FLIGHT RECORDER: Reload persisted state before any loops start â”€â”€
-    loaded_trail, loaded_traps = load_flight_state()
+    loaded_trail, loaded_traps, loaded_cooldowns = load_flight_state()
+    from core.brain import GLOBAL_COOLDOWNS
+    if loaded_cooldowns:
+        GLOBAL_COOLDOWNS.update(loaded_cooldowns)
     if loaded_trail:
         step_trail_state.update(loaded_trail)
     if loaded_traps:
@@ -3321,10 +3477,13 @@ FOREX_DEFAULTS = {
     "base_stop_loss_pct": 0.12,
     "max_leverage": 10,
     "max_open_positions": 1,
-    "cooldown_minutes": 45,
+    "cooldown_minutes": 5,
     "auto_rebalance": True,
     "stop_loss_enabled": True,
     "take_profit_enabled": True,
+    "scalper_mode": False,
+    "scalper_profit_target": 100.0,
+    "scalper_stop_loss": -20.0,
 }
 
 CRYPTO_DEFAULTS = {
@@ -3360,7 +3519,7 @@ def _load_params_from_disk():
                         changed = True
                     if changed:
                         _save_params_to_disk(data)
-                        print("[PARAMS] Applied Forex safety clamp: risk<=2%, max_per_symbol<=1, cooldown>=45min")
+                        print("[PARAMS] Applied Forex safety clamp: risk<=2%, max_per_symbol<=1, cooldown>=5min")
                 return data
     except Exception as e:
         print(f"[PARAMS] Load error: {e}")
@@ -3385,10 +3544,12 @@ def _save_params_to_disk(params: dict):
 
 def _hot_reload_params(params: dict):
     """Hot-reload globals from saved parameters â€” no restart needed."""
-    global MAX_POSITIONS_PER_SYMBOL, GLOBAL_COOLDOWN_MINUTES
+    global MAX_POSITIONS_PER_SYMBOL, GLOBAL_COOLDOWN_MINUTES, SCALPER_MODE
     MAX_POSITIONS_PER_SYMBOL = max(1, min(2, int(params.get("max_open_positions", 2))))
     GLOBAL_COOLDOWN_MINUTES = max(1, int(params.get("cooldown_minutes", 30)))
-    print(f"[PARAMS] Hot-reloaded: max_per_symbol={MAX_POSITIONS_PER_SYMBOL}, SL={params.get('base_stop_loss_pct')}%, TP={params.get('base_take_profit_pct')}%, cooldown={GLOBAL_COOLDOWN_MINUTES}min, mode={params.get('mode')}")
+    SCALPER_MODE = bool(params.get("scalper_mode", False))
+    reload_target_symbols()
+    print(f"[PARAMS] Hot-reloaded: max_per_symbol={MAX_POSITIONS_PER_SYMBOL}, cooldown={GLOBAL_COOLDOWN_MINUTES}min, mode={params.get('mode')}, scalper={SCALPER_MODE}")
 
 
 @app.get("/api/parameters")

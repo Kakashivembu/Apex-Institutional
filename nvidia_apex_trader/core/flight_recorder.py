@@ -37,7 +37,7 @@ _last_save_time = 0.0
 SAVE_DEBOUNCE_SECONDS = 2.0
 
 
-def save_flight_state(step_trail_state: dict, ai_predictive_traps: dict, force: bool = False):
+def save_flight_state(step_trail_state: dict, ai_predictive_traps: dict, force: bool = False, global_cooldowns: dict = None):
     """Persist step_trail_state and ai_predictive_traps to disk.
     
     Uses atomic write (write to .tmp, then os.replace) to avoid
@@ -47,6 +47,7 @@ def save_flight_state(step_trail_state: dict, ai_predictive_traps: dict, force: 
         step_trail_state: Per-account/symbol trailing stop state dict.
         ai_predictive_traps: Per-symbol AI trap predictions dict.
         force: If True, bypass debounce timer (used for tier changes & position closes).
+        global_cooldowns: Cooldown dictionary from core.brain
     """
     global _last_save_time
     
@@ -61,7 +62,8 @@ def save_flight_state(step_trail_state: dict, ai_predictive_traps: dict, force: 
             "version": 1
         },
         "step_trail_state": step_trail_state,
-        "ai_predictive_traps": ai_predictive_traps
+        "ai_predictive_traps": ai_predictive_traps,
+        "global_cooldowns": global_cooldowns if global_cooldowns is not None else {}
     }
     
     tmp_path = STATE_FILE + ".tmp"
@@ -104,12 +106,12 @@ def load_flight_state() -> tuple:
                 try:
                     with open(_LEGACY_STATE_FILE, "r", encoding="utf-8") as f:
                         payload = json.load(f)
-                    return payload.get("step_trail_state", {}), payload.get("ai_predictive_traps", {})
+                    return payload.get("step_trail_state", {}), payload.get("ai_predictive_traps", {}), payload.get("global_cooldowns", {})
                 except:
                     pass
         else:
             print(f"[FLIGHT-RECORDER] No state file found at {STATE_FILE}. Starting fresh.")
-            return {}, {}
+            return {}, {}, {}
     
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -166,8 +168,10 @@ def load_flight_state() -> tuple:
         # Warn if state is very stale (> 1 hour)
         if age_seconds > 3600:
             print(f"[FLIGHT-RECORDER] WARNING: State is {age_minutes:.0f} min old. Positions may have closed. Will reconcile on first trail scan.")
+            
+        global_cooldowns = payload.get("global_cooldowns", {})
         
-        return step_trail, ai_traps
+        return step_trail, ai_traps, global_cooldowns
     
     except json.JSONDecodeError as e:
         print(f"[FLIGHT-RECORDER] CORRUPT state file (JSON error: {e}). Starting fresh.")
@@ -178,8 +182,8 @@ def load_flight_state() -> tuple:
             print(f"[FLIGHT-RECORDER] Corrupt file preserved as: {corrupt_path}")
         except:
             pass
-        return {}, {}
+        return {}, {}, {}
     
     except Exception as e:
         print(f"[FLIGHT-RECORDER] LOAD ERROR: {e}. Starting fresh.")
-        return {}, {}
+        return {}, {}, {}
