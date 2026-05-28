@@ -741,3 +741,42 @@ async def get_live_price(symbol: str = "GOLD.i#") -> dict:
         "high_price": high_price,
         "low_price": low_price
     }
+
+async def get_historical_candles(symbol: str, timeframe: str = "5m", count: int = 500) -> list[dict]:
+    """
+    Fetches historical OHLCV candles for the given symbol.
+    timeframe can be '1m', '5m', '15m', '1h', '4h', '1d'.
+    Returns a list of dicts: [{time, open, high, low, close, volume}, ...]
+    """
+    if mt5.terminal_info() is None:
+        return []
+        
+    resolved_symbol = _resolve_tradeable_symbol(symbol)
+    
+    tf_map = {
+        "1m": mt5.TIMEFRAME_M1,
+        "5m": mt5.TIMEFRAME_M5,
+        "15m": mt5.TIMEFRAME_M15,
+        "1h": mt5.TIMEFRAME_H1,
+        "4h": mt5.TIMEFRAME_H4,
+        "1d": mt5.TIMEFRAME_D1
+    }
+    tf = tf_map.get(timeframe.lower(), mt5.TIMEFRAME_M5)
+    
+    rates = mt5.copy_rates_from_pos(resolved_symbol, tf, 0, count)
+    if rates is None:
+        logger.error(f"Failed to get candles for {resolved_symbol}. Error: {mt5.last_error()}")
+        return []
+        
+    candles = []
+    for r in rates:
+        candles.append({
+            "time": int(r['time']),
+            "open": float(r['open']),
+            "high": float(r['high']),
+            "low": float(r['low']),
+            "close": float(r['close']),
+            "volume": float(r['tick_volume'])
+        })
+        
+    return candles

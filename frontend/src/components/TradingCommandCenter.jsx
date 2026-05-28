@@ -6,6 +6,7 @@ import {
   CheckCircle2, XCircle, Clock, Terminal
 } from 'lucide-react';
 import { AdvancedRealTimeChart } from 'react-ts-tradingview-widgets';
+import BotChartAnalysis from './BotChartAnalysis';
 import { API_BASE } from '../lib/api';
 
 const USD_TO_INR = 85;
@@ -602,24 +603,9 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
         {/* Main Chart Area */}
         <div className="col-span-12 lg:col-span-8 glass-card rounded-[2.5rem] p-4 overflow-hidden shadow-2xl relative">
           <div className="h-[600px] w-full rounded-3xl overflow-hidden bg-[#050505]">
-            <AdvancedRealTimeChart 
-              key={`main-chart-${activeChartAsset.id}`}
-              theme="dark" 
-              symbol={getTradingViewSymbol(activeChartAsset.id, activeChartAsset.symbol || "OANDA:XAUUSD")}
-              autosize
-              interval="15"
-              timezone="Etc/UTC"
-              style="1"
-              locale="en"
-              enable_publishing={false}
-              hide_top_toolbar={false}
-              hide_legend={false}
-              save_image={false}
-              enabled_features={[
-                'use_localstorage_for_settings',
-                'save_chart_properties_to_local_storage',
-              ]}
-              container_id={`main_chart_${activeChartAsset.id.replace(/[^a-zA-Z0-9]/g, '')}`}
+            <BotChartAnalysis 
+              symbol={activeChartAsset.id}
+              marketData={localMarketData}
             />
           </div>
         </div>

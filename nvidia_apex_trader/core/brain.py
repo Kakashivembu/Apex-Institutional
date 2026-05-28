@@ -1163,81 +1163,104 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
     async def run_scalper():
         if is_scalping:
             import re as _re
-            from core.data import compute_rsi
+            from core.data import compute_scalper_indicators
             
-            trend_data = compute_trend_bias(market_data_text)
-            trend_score = trend_data.get("score", 0)
-            per_tf = trend_data.get("per_tf", {})
-            score_1m = per_tf.get("1m", 0)
+            # ── MASTER INDICATOR COMPUTATION (one shot, pure math) ──
+            ind = await asyncio.to_thread(compute_scalper_indicators, symbol)
             
-            bullish_choch = "BULLISH BOS/CHoCH" in market_data_text
-            bearish_choch = "BEARISH BOS/CHoCH" in market_data_text
+            if not ind.get("valid"):
+                return {"decision": "HOLD", "confidence": 0, "reasoning": "Elite Scalper: Indicator data unavailable"}
             
-            # ── LAYER 1: Extract 1m close prices for RSI(3) computation ──
-            closes_1m = []
-            for m in _re.finditer(r'\[1m\].*?Price:\s*([\d.]+)', market_data_text):
-                closes_1m.append(float(m.group(1)))
-            
-            # Also try to extract from candle data injected into market_data_text
-            # The format_for_llm function puts "Price: XXXX" for each timeframe
-            # For a more robust extraction, fetch 1m candles directly
-            if len(closes_1m) < 5:
-                try:
-                    from core.data import fetch_candles_sync
-                    raw_1m = fetch_candles_sync(symbol, "1m", 20)
-                    if raw_1m:
-                        closes_1m = [float(c.get("close", 0)) for c in raw_1m]
-                except Exception:
-                    pass
-            
-            rsi_3 = compute_rsi(closes_1m, period=3) if len(closes_1m) >= 5 else 50.0
-            
-            # ── LAYER 2: Extract OFI from market data context ──
+            # ── Extract OFI from market data context ──
             ofi_value = 0
             ofi_match = _re.search(r'OFI[=:]\s*([+-]?\d+)', market_data_text)
             if ofi_match:
                 ofi_value = int(ofi_match.group(1))
             
-            # ── LAYER 3: Confirmation candle check ──
-            # Check if the last 1m candle body confirms the direction
-            last_candle_bearish = False
-            last_candle_bullish = False
-            if len(closes_1m) >= 3:
-                # Look at last 2 candles for confirmation
-                last_close = closes_1m[-1]
-                prev_close = closes_1m[-2]
-                last_candle_bearish = last_close < prev_close
-                last_candle_bullish = last_close > prev_close
+            # ── Extract SMC context ──
+            bullish_choch = "BULLISH BOS/CHoCH" in market_data_text
+            bearish_choch = "BEARISH BOS/CHoCH" in market_data_text
             
-            print(f"[SCALPER-RSI] RSI(3)={rsi_3:.1f} | OFI={ofi_value} | 1m_Score={score_1m} | Trend={trend_score} | Last_Bearish={last_candle_bearish} | Last_Bullish={last_candle_bullish}")
+            sweep_detected = smc_data.get("sweep_detected", False) if smc_data else False
+            sweep_dir = smc_data.get("direction", "NONE") if smc_data else "NONE"
+            sweep_anchor = smc_data.get("stop_loss_anchor", 0.0) if smc_data else 0.0
             
-            # ── LAYER 4: SMC Zones ──
-            is_discount = "Zone: DISCOUNT" in market_data_text
-            is_premium = "Zone: PREMIUM" in market_data_text
-
-            # ── MICRO-TREND CALCULATION ──
-            # For aggressive scalping, we ignore 1H/4H macro trends and only look at immediate momentum.
-            score_5m = per_tf.get("5m", 0)
-            scalper_trend = (score_1m * 0.6) + (score_5m * 0.4)
+            # ── LOGGING ──
+            print(f"[ELITE-SCALPER] Price={ind['current_price']} | EMA200={ind['ema200']:.2f} | EMA50={ind['ema50']:.2f} | EMA9/21={ind['ema9']:.2f}/{ind['ema21']:.2f}")
+            print(f"[ELITE-SCALPER] Keltner=[{ind['keltner_lower']:.2f} | {ind['keltner_middle']:.2f} | {ind['keltner_upper']:.2f}] | BrkUp={ind['keltner_breakout_up']} | BrkDn={ind['keltner_breakout_down']}")
+            print(f"[ELITE-SCALPER] RSI(7)={ind['rsi7']:.1f} | ATR(14)={ind['atr14']:.2f} | OFI={ofi_value} | Sweep={sweep_detected} ({sweep_dir}) | Candle={'↑' if ind['last_candle_bullish'] else '↓'}")
             
-            # ── DECISION ENGINE: Hyper-Aggressive Momentum Scalper ──
-            # LONG SCENARIO (Aggressive Buying Momentum)
-            if scalper_trend > -10:  # Micro-trend is not heavily bearish
-                if ofi_value > 200:
-                    if rsi_3 < 70 and last_candle_bullish:
-                        return {"decision": "BUY", "confidence": 100, "reasoning": f"Aggressive Scalper: OFI Surge Buy! OFI={ofi_value}, RSI={rsi_3:.1f}, MicroTrend={scalper_trend:.1f}"}
-                    else:
-                        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Aggressive Scalper: Waiting for Bullish Candle & RSI < 70 (RSI={rsi_3:.1f}, Bullish={last_candle_bullish})"}
+            # ══════════════════════════════════════════════════════
+            # ENGINE B: SMC LIQUIDITY SWEEP REVERSAL BYPASS
+            # ══════════════════════════════════════════════════════
+            # If a liquidity sweep is detected, and the last 1-minute candle confirms the reversal,
+            # instantly bypass the lagging EMAs and enter the trade to catch the exact bottom/top.
+            if sweep_detected:
+                if sweep_dir == "LONG" and ind["last_candle_bullish"]:
+                    print(f"[SMC-SWEEP] Bullish Liquidity Sweep confirmed by green M1 candle! Executing Falling Knife Reversal Bypass.")
+                    return {"decision": "BUY", "confidence": 100, "reasoning": f"SMC Sweep Reversal Bypass (Bullish). Anchor: {sweep_anchor:.5f}", "atr": ind["atr14"]}
+                elif sweep_dir == "SHORT" and ind["last_candle_bearish"]:
+                    print(f"[SMC-SWEEP] Bearish Liquidity Sweep confirmed by red M1 candle! Executing Top-Reversal Bypass.")
+                    return {"decision": "SELL", "confidence": 100, "reasoning": f"SMC Sweep Reversal Bypass (Bearish). Anchor: {sweep_anchor:.5f}", "atr": ind["atr14"]}
+                    
+            # ══════════════════════════════════════════════════════
+            # ENGINE A: ELITE M1 SCALPER (5-LAYER CONFLUENCE)
+            # ══════════════════════════════════════════════════════
             
-            # SHORT SCENARIO (Aggressive Selling Momentum)
-            if scalper_trend < 10:   # Micro-trend is not heavily bullish
-                if ofi_value < -200:
-                    if rsi_3 > 30 and last_candle_bearish:
-                        return {"decision": "SELL", "confidence": 100, "reasoning": f"Aggressive Scalper: OFI Surge Sell! OFI={ofi_value}, RSI={rsi_3:.1f}, MicroTrend={scalper_trend:.1f}"}
-                    else:
-                        return {"decision": "HOLD", "confidence": 0, "reasoning": f"Aggressive Scalper: Waiting for Bearish Candle & RSI > 30 (RSI={rsi_3:.1f}, Bearish={last_candle_bearish})"}
+            # ── LAYER 1: EMA HIERARCHY (Macro Trend Filter) ──
+            long_L1 = ind["price_above_200"]
+            short_L1 = not ind["price_above_200"]
             
-            return {"decision": "HOLD", "confidence": 0, "reasoning": f"Aggressive Scalper: Waiting for OFI Momentum Surge... (Current OFI={ofi_value})"}
+            # ── LAYER 2: MOMENTUM OR PULLBACK ──
+            # In a massive runaway trend, price will not pull back. 
+            # We accept EITHER a micro-pullback OR extreme momentum (RSI > 75).
+            long_L2 = ind.get("pullback_to_fast", False) or ind.get("pullback_to_50", False) or ind["rsi7"] > 70
+            short_L2 = ind.get("pullback_to_fast", False) or ind.get("pullback_to_50", False) or ind["rsi7"] < 30
+            
+            # ── LAYER 3: KELTNER CHANNEL BREAKOUT (Strict 2-candle body expansion) ──
+            long_L3 = ind["keltner_breakout_up"]
+            short_L3 = ind["keltner_breakout_down"]
+            
+            # ── LAYER 4: RSI MOMENTUM PERSISTENCE ──
+            # Re-added the upper limit to prevent buying blow-off tops!
+            # A limit of 75 allows entering strong momentum without buying the absolute peak (which hits 80+).
+            long_L4 = 50 < ind["rsi7"] < 75
+            short_L4 = 25 < ind["rsi7"] < 50
+            
+            # ── LAYER 5: ORDER FLOW CONFIRMATION (OFI) ── [BONUS]
+            long_L5 = ofi_value > 0
+            short_L5 = ofi_value < 0
+            
+            # ── CONFLUENCE EVALUATION (FIXED FOR STRONG TRENDS) ──
+            # Mandatory layers: L1 + L2 + L3 + L4 must ALL pass
+            
+            long_mandatory = long_L1 and long_L2 and long_L3 and long_L4
+            long_signal = long_mandatory and ind["last_candle_bullish"]
+            
+            short_mandatory = short_L1 and short_L2 and short_L3 and short_L4
+            short_signal = short_mandatory and ind["last_candle_bearish"]
+            
+            # ── DECISION ──
+            if long_signal:
+                layers_passed = f"L1={'✓' if long_L1 else '✗'} L2={'✓' if long_L2 else '✗'} L3={'✓' if long_L3 else '✗'} L4={'✓' if long_L4 else '✗'} L5={'✓' if long_L5 else '✗'}"
+                return {"decision": "BUY", "confidence": 100, "reasoning": f"Elite Scalper: LONG CONFLUENCE! [{layers_passed}] RSI={ind['rsi7']:.1f} OFI={ofi_value}", "atr": ind["atr14"]}
+            
+            if short_signal:
+                layers_passed = f"L1={'✓' if short_L1 else '✗'} L2={'✓' if short_L2 else '✗'} L3={'✓' if short_L3 else '✗'} L4={'✓' if short_L4 else '✗'} L5={'✓' if short_L5 else '✗'}"
+                return {"decision": "SELL", "confidence": 100, "reasoning": f"Elite Scalper: SHORT CONFLUENCE! [{layers_passed}] RSI={ind['rsi7']:.1f} OFI={ofi_value}", "atr": ind["atr14"]}
+            
+            # ── HOLD: Show which layers are blocking ──
+            if long_L1 or short_L1:
+                direction = "LONG" if long_L1 else "SHORT"
+                L1 = long_L1 if direction == "LONG" else short_L1
+                L3 = long_L3 if direction == "LONG" else short_L3
+                L4 = long_L4 if direction == "LONG" else short_L4
+                L2 = long_L2 if direction == "LONG" else short_L2
+                L5 = long_L5 if direction == "LONG" else short_L5
+                layers = f"L1={'✓' if L1 else '✗'} L2={'✓' if L2 else '✗'} L3={'✓' if L3 else '✗'} L4={'✓' if L4 else '✗'} L5={'✓' if L5 else '✗'}"
+                return {"decision": "HOLD", "confidence": 0, "reasoning": f"Elite Scalper: {direction} bias but incomplete confluence [{layers}]"}
+            
+            return {"decision": "HOLD", "confidence": 0, "reasoning": f"Elite Scalper: No EMA hierarchy alignment. Price vs EMA200: {'Above' if ind['price_above_200'] else 'Below'}, EMA9 vs 21: {'Above' if ind['ema9_above_21'] else 'Below'}"}
         await asyncio.sleep(1.0) # Stagger
         return await call_hermes_gateway({"messages": [{"role": "user", "content": scalper_prompt}]}, broadcast_callback, session_name="apex_scalper", fast_mode=is_scalping)
 

@@ -1,8 +1,5 @@
 APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 
-- [05/26 23:53] **WEAK_SIGNAL** USDCAD.x SHORT lost $0.01 (exit: tp) → Only enter when AI confidence ≥ 70%
-- [05/27 08:10] **SPREAD_KILL** USDJPY.x SHORT lost $68.59 (exit: tp) → Avoid entries during low-liquidity periods
-- [05/27 08:10] **WEAK_SIGNAL** GBPJPY.x SHORT lost $752.40 (exit: sl) → Only enter when AI confidence ≥ 70%
 - [05/27 12:05] **WEAK_SIGNAL** XAUUSD.x LONG lost $42.74 (exit: sl) → Only enter when AI confidence ≥ 70%
 - [05/27 12:13] **WEAK_SIGNAL** XAUUSD.x LONG lost $43.58 (exit: sl) → Only enter when AI confidence ≥ 70%
 - [05/27 13:33] **WEAK_SIGNAL** XAUUSD.x LONG lost $43.01 (exit: sl) → Only enter when AI confidence ≥ 70%
@@ -25,3 +22,6 @@ APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 - [05/28 11:34] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.06 (exit: tp) → Only enter when AI confidence ≥ 70%
 - [05/28 14:04] **SPREAD_KILL** XAUUSD.x SHORT lost $0.04 (exit: tp) → Avoid entries during low-liquidity periods
 - [05/28 14:51] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.07 (exit: tp) → Only enter when AI confidence ≥ 70%
+- [05/28 19:08] **SPREAD_KILL** XAUUSD.x SHORT lost $0.01 (exit: sl) → Avoid entries during low-liquidity periods
+- [05/28 19:13] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.08 (exit: sl) → Only enter when AI confidence ≥ 70%
+- [05/28 19:29] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.09 (exit: sl) → Only enter when AI confidence ≥ 70%

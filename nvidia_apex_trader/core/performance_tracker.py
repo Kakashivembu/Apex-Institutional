@@ -11,19 +11,23 @@ from datetime import datetime, date
 # KELLY CRITERION POSITION SIZING
 # ============================================================
 
-def kelly_position_size(confidence_pct: float, rr_ratio: float, max_risk_pct: float = 0.045, kelly_fraction: float = 0.50) -> float:
+def kelly_position_size(confidence_pct: float, rr_ratio: float, max_risk_pct: float = 0.045, kelly_fraction: float = 0.50, scalper_mode: bool = False) -> float:
     """
     Fractional Kelly Criterion for optimal position sizing.
     
     Args:
         confidence_pct: AI consensus confidence (0-100)
         rr_ratio: Risk/Reward ratio (e.g., 2.0 means TP is 2x SL)
-        max_risk_pct: Hard ceiling on risk per trade (default 2%)
+        max_risk_pct: Hard ceiling on risk per trade (default 4.5%)
         kelly_fraction: Kelly multiplier (0.25 = quarter-Kelly for safety)
+        scalper_mode: If True, hard cap at 1.5% (~$15 on $1000 account)
     
     Returns:
         Optimal risk percentage of equity (e.g., 0.005 = 0.5%)
     """
+    # SCALPER MODE: Hard cap risk at 1.5% ($15 on $1000 GoatFunded account)
+    if scalper_mode:
+        max_risk_pct = 0.015
     # Map confidence to win probability
     p = max(0.01, min(0.95, confidence_pct / 100))
     b = max(0.1, rr_ratio)  # Net odds from R:R ratio
@@ -159,12 +163,17 @@ def get_session_stats() -> dict:
     }
 
 
-def get_kelly_recommendation(session_stats: dict, base_confidence: float, rr_ratio: float) -> dict:
+def get_kelly_recommendation(session_stats: dict, base_confidence: float, rr_ratio: float, scalper_mode: bool = False) -> dict:
     """
     Get Kelly-adjusted position sizing that adapts to session performance.
     If session is going poorly, automatically reduce aggression.
+    Scalper mode uses quarter-Kelly with $15 hard cap.
     """
     fraction = 0.50  # Default half-Kelly for Competition Mode
+    
+    # SCALPER MODE: Use quarter-Kelly for micro-account protection
+    if scalper_mode:
+        fraction = 0.25
     
     win_rate = session_stats.get("win_rate", 0)
     session_trades = session_stats.get("session_trades", 0)
@@ -172,21 +181,31 @@ def get_kelly_recommendation(session_stats: dict, base_confidence: float, rr_rat
     
     # Adaptive Kelly fraction based on live session performance
     if session_trades >= 3:
-        if win_rate >= 70:
-            fraction = 0.75  # Highly aggressive on hot streak
-        elif win_rate < 40:
-            fraction = 0.25  # Reduce size on cold streak
-        elif streak <= -3:
-            fraction = 0.15  # Emergency reduction on loss streak
+        if scalper_mode:
+            # Scalper: Very conservative adaptation
+            if win_rate >= 70:
+                fraction = 0.35  # Slightly more aggressive on hot streak
+            elif win_rate < 40:
+                fraction = 0.15  # Micro-risk on cold streak
+            elif streak <= -3:
+                fraction = 0.10  # Emergency minimum on loss streak
+        else:
+            if win_rate >= 70:
+                fraction = 0.75  # Highly aggressive on hot streak
+            elif win_rate < 40:
+                fraction = 0.25  # Reduce size on cold streak
+            elif streak <= -3:
+                fraction = 0.15  # Emergency reduction on loss streak
     
-    risk_pct = kelly_position_size(base_confidence, rr_ratio, kelly_fraction=fraction)
+    risk_pct = kelly_position_size(base_confidence, rr_ratio, kelly_fraction=fraction, scalper_mode=scalper_mode)
     
+    mode_label = "SCALPER" if scalper_mode else "Kelly"
     return {
         "risk_pct": risk_pct,
         "kelly_fraction": fraction,
         "reason": (
-            f"Kelly {fraction:.0%} | WR:{win_rate:.0f}% ({session_trades} trades) | Streak:{streak:+d}"
+            f"{mode_label} {fraction:.0%} | WR:{win_rate:.0f}% ({session_trades} trades) | Streak:{streak:+d}"
             if session_trades >= 3 else
-            f"Kelly {fraction:.0%} | New session ({session_trades} trades)"
+            f"{mode_label} {fraction:.0%} | New session ({session_trades} trades)"
         )
     }

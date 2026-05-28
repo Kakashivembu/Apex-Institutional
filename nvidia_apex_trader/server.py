@@ -1332,26 +1332,32 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         trend_score = result.get("_debug", {}).get("trend_bias", {}).get("score", 0)
                         abs_score = abs(trend_score)
 
-                        # ── KELLY CRITERION POSITION SIZING ──
-                        # Replaces flat 0.2-0.5% risk with mathematically optimal sizing.
-                        # Uses AI confidence + R:R ratio to compute edge, then applies
-                        # quarter-Kelly (25%) fraction for variance reduction.
-                        # Adapts live: if session win rate drops, Kelly fraction shrinks.
-                        rr_ratio = round(clamped_tp / clamped_sl, 2) if clamped_sl > 0 else 1.5
-                        session_stats = get_session_stats()
-                        kelly_rec = get_kelly_recommendation(session_stats, consensus_strength, rr_ratio)
-                        base_risk = kelly_rec["risk_pct"]
+                        # ── POSITION SIZING ──
+                        active_count = 0
+                        if SCALPER_MODE:
+                            # Strict 1.5% fixed risk for Scalper Blueprint
+                            risk_pct = 0.015
+                            base_risk = 0.015
+                            rr_ratio = 2.0 # 3.0 ATR / 1.5 ATR
+                            kelly_rec = {"reason": "[STRICT] 1.5% Blueprint Risk"}
+                            active_count = len(existing) if existing else 0
+                        else:
+                            # ── KELLY CRITERION POSITION SIZING ──
+                            rr_ratio = round(clamped_tp / clamped_sl, 2) if clamped_sl > 0 else 1.5
+                            session_stats = get_session_stats()
+                            kelly_rec = get_kelly_recommendation(session_stats, consensus_strength, rr_ratio)
+                            base_risk = kelly_rec["risk_pct"]
 
-                        # CBT Framework: Probability of Ruin Circuit Breaker
-                        prob_ruin = session_stats.get("probability_of_ruin", 0.0)
-                        if prob_ruin > 5.0:
-                            print(f"[CIRCUIT BREAKER] Probability of Ruin at {prob_ruin}% (> 5%). Dynamically halving kelly risk fraction!")
-                            base_risk *= 0.5
-                            kelly_rec['reason'] += " [CIRCUIT BREAKER: RISK HALVED]"
+                            # CBT Framework: Probability of Ruin Circuit Breaker
+                            prob_ruin = session_stats.get("probability_of_ruin", 0.0)
+                            if prob_ruin > 5.0:
+                                print(f"[CIRCUIT BREAKER] Probability of Ruin at {prob_ruin}% (> 5%). Dynamically halving kelly risk fraction!")
+                                base_risk *= 0.5
+                                kelly_rec['reason'] += " [CIRCUIT BREAKER: RISK HALVED]"
 
-                        active_count = len(existing) if existing else 0
-                        split_factor = 1.0 / (active_count + 1)
-                        risk_pct = base_risk * split_factor
+                            active_count = len(existing) if existing else 0
+                            split_factor = 1.0 / (active_count + 1)
+                            risk_pct = base_risk * split_factor
                         
                         max_risk_usd = acct_equity * risk_pct
                         print(f"[KELLY:{t_account}] {kelly_rec['reason']} | R:R={rr_ratio:.1f} → Risk {base_risk*100:.3f}%, Split {active_count+1} → {risk_pct*100:.3f}% (${max_risk_usd:.2f})")
@@ -1367,13 +1373,30 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                             return
                             
                         tick = symbol_info.point
+                        
+                        # ATR-DYNAMIC SL/TP: If scalper returned ATR value, use it
+                        scalper_atr = final_decision.get("atr", 0)
+                        if SCALPER_MODE and scalper_atr > 0:
+                            atr_sl_dist = scalper_atr * 1.5  # 1.5x ATR for SL
+                            atr_tp_dist = scalper_atr * 3.0  # 3.0x ATR for TP (2:1 R:R)
+                            if action == "LONG":
+                                sl_price = round((mark_price - atr_sl_dist) / tick) * tick
+                                tp_price = round((mark_price + atr_tp_dist) / tick) * tick
+                            else:
+                                sl_price = round((mark_price + atr_sl_dist) / tick) * tick
+                                tp_price = round((mark_price - atr_tp_dist) / tick) * tick
+                            print(f"[ATR-RISK] Dynamic SL/TP: ATR={scalper_atr:.2f} | SL={atr_sl_dist:.2f} pts (1.5×ATR) | TP={atr_tp_dist:.2f} pts (3×ATR) | R:R=1:2")
+                        else:
+                            if action == "LONG":
+                                sl_price = round(mark_price * (1 - stop_loss_pct/100) / tick) * tick
+                                tp_price = round(mark_price * (1 + take_profit_pct/100) / tick) * tick
+                            else:
+                                sl_price = round(mark_price * (1 + stop_loss_pct/100) / tick) * tick
+                                tp_price = round(mark_price * (1 - take_profit_pct/100) / tick) * tick
+                        
                         if action == "LONG":
-                            sl_price = round(mark_price * (1 - stop_loss_pct/100) / tick) * tick
-                            tp_price = round(mark_price * (1 + take_profit_pct/100) / tick) * tick
                             api_side = "long"
                         else:
-                            sl_price = round(mark_price * (1 + stop_loss_pct/100) / tick) * tick
-                            tp_price = round(mark_price * (1 - take_profit_pct/100) / tick) * tick
                             api_side = "short"
                         
                         # --- AMD TARGET OVERRIDE ---
@@ -1899,6 +1922,7 @@ async def step_trailing_loop():
                                 "sl_order_id": existing_sl_order_id,
                                 "last_api_update": 0,
                                 "secure_bag_extracted": recovered_tier >= 1,  # Already past breakeven on recovery
+                                "entry_timestamp": time.time(),  # For rapid invalidation
                             }
                             
                             if is_recovery:
@@ -1944,11 +1968,7 @@ async def step_trailing_loop():
                             move_pct = ((entry_price - peak) / entry_price) * 100
                             
                         # ============================================================
-                        # SCALPER MODE: AGGRESSIVE M1 REVERSAL SECURE BAG (REMOVED)
-                        # ============================================================
-                        # The hyper-sensitive 1-tick candle color reversal logic was removed.
-                        # We now rely exclusively on the robust Step-Trail and SMC Sweep defense 
-                        # to ensure winners are allowed to run to Take Profit.
+                        # RAPID INVALIDATION ENGINE (REMOVED BY USER)
                         # ============================================================
                         # UNIFIED TRAIL DECISION ENGINE
                         # Calculates BOTH math-tier SL and AI-trap SL candidates,
@@ -1957,62 +1977,83 @@ async def step_trailing_loop():
                         
                         tier_names = {0: "INITIAL", 1: "BREAKEVEN", 2: "PROFIT STEP", 3: "RUNNER TRAIL"}
                         
-                        # â”€â”€ CANDIDATE A: Math-Based Tier SL â”€â”€
+                        # ── CANDIDATE A: Math-Based Tier SL ──
                         math_tier = state["current_tier"]
                         math_sl = state["current_active_sl"]
                         math_wants_update = False
                         
-                        # TIER 3: Runner Trail â€” ultra-tight 0.15% behind peak for big moves
-                        if move_pct >= cfg.get("tier3_trigger_pct", 999):
-                            math_tier = 3
-                            if side == "long":
-                                raw_sl = peak * (1 - cfg.get("tier3_trail_pct", 0.15) / 100)
-                            else:
-                                raw_sl = peak * (1 + cfg.get("tier3_trail_pct", 0.15) / 100)
-                            candidate_sl = round(round(raw_sl / tick) * tick, digits)
-                            min_step = cfg.get("tier2_min_step_pct", 0.05)
-                            if side == "long":
-                                step_threshold = state["current_active_sl"] * (1 + min_step / 100)
-                                if candidate_sl > step_threshold:
-                                    math_sl = candidate_sl
-                                    math_wants_update = True
-                            else:
-                                step_threshold = state["current_active_sl"] * (1 - min_step / 100)
-                                if candidate_sl < step_threshold:
-                                    math_sl = candidate_sl
-                                    math_wants_update = True
+                        if SCALPER_MODE and dynamic_atr_pct > 0:
+                            # ── BLUEPRINT: DYNAMIC KELTNER / ATR TRAIL ──
+                            # Keltner boundary is ~2.0 ATR. The blueprint says trail behind Keltner once in profit.
+                            # We use 1.5x ATR trailing once price clears 1.0x ATR profit.
+                            atr_profit_threshold = dynamic_atr_pct * 1.0
+                            atr_trail_distance = dynamic_atr_pct * 1.5
+                            
+                            if move_pct >= atr_profit_threshold:
+                                math_tier = 2
+                                if side == "long":
+                                    raw_sl = peak * (1 - atr_trail_distance / 100)
+                                    candidate_sl = round(round(raw_sl / tick) * tick, digits)
+                                    if candidate_sl > state["current_active_sl"]:
+                                        math_sl = candidate_sl
+                                        math_wants_update = True
+                                else:
+                                    raw_sl = peak * (1 + atr_trail_distance / 100)
+                                    candidate_sl = round(round(raw_sl / tick) * tick, digits)
+                                    if candidate_sl < state["current_active_sl"]:
+                                        math_sl = candidate_sl
+                                        math_wants_update = True
+                        else:
+                            # TIER 3: Runner Trail — ultra-tight 0.15% behind peak for big moves
+                            if move_pct >= cfg.get("tier3_trigger_pct", 999):
+                                math_tier = 3
+                                if side == "long":
+                                    raw_sl = peak * (1 - cfg.get("tier3_trail_pct", 0.15) / 100)
+                                else:
+                                    raw_sl = peak * (1 + cfg.get("tier3_trail_pct", 0.15) / 100)
+                                candidate_sl = round(round(raw_sl / tick) * tick, digits)
+                                min_step = cfg.get("tier2_min_step_pct", 0.05)
+                                if side == "long":
+                                    step_threshold = state["current_active_sl"] * (1 + min_step / 100)
+                                    if candidate_sl > step_threshold:
+                                        math_sl = candidate_sl
+                                        math_wants_update = True
+                                else:
+                                    step_threshold = state["current_active_sl"] * (1 - min_step / 100)
+                                    if candidate_sl < step_threshold:
+                                        math_sl = candidate_sl
+                                        math_wants_update = True
 
-                        # TIER 2: Profit Step â€” trail 0.3% behind peak
-                        elif move_pct >= cfg.get("tier2_trigger_pct", 999):
-                            math_tier = 2
-                            if side == "long":
-                                raw_sl = peak * (1 - cfg.get("tier2_trail_pct", 0.3) / 100)
-                            else:
-                                raw_sl = peak * (1 + cfg.get("tier2_trail_pct", 0.3) / 100)
-                            candidate_sl = round(round(raw_sl / tick) * tick, digits)
-                            min_step = cfg.get("tier2_min_step_pct", 0.05)
-                            if side == "long":
-                                step_threshold = state["current_active_sl"] * (1 + min_step / 100)
-                                if candidate_sl > step_threshold:
-                                    math_sl = candidate_sl
-                                    math_wants_update = True
-                            else:
-                                step_threshold = state["current_active_sl"] * (1 - min_step / 100)
-                                if candidate_sl < step_threshold:
-                                    math_sl = candidate_sl
-                                    math_wants_update = True
+                            # TIER 2: Profit Step — trail 0.3% behind peak
+                            elif move_pct >= cfg.get("tier2_trigger_pct", 999):
+                                math_tier = 2
+                                if side == "long":
+                                    raw_sl = peak * (1 - cfg.get("tier2_trail_pct", 0.3) / 100)
+                                else:
+                                    raw_sl = peak * (1 + cfg.get("tier2_trail_pct", 0.3) / 100)
+                                candidate_sl = round(round(raw_sl / tick) * tick, digits)
+                                min_step = cfg.get("tier2_min_step_pct", 0.05)
+                                if side == "long":
+                                    step_threshold = state["current_active_sl"] * (1 + min_step / 100)
+                                    if candidate_sl > step_threshold:
+                                        math_sl = candidate_sl
+                                        math_wants_update = True
+                                else:
+                                    step_threshold = state["current_active_sl"] * (1 - min_step / 100)
+                                    if candidate_sl < step_threshold:
+                                        math_sl = candidate_sl
+                                        math_wants_update = True
 
-                        # TIER 1: Breakeven lock + Secure Bag 50% Extraction
-                        elif move_pct >= cfg["tier1_trigger_pct"] and state["current_tier"] < 1:
-                            math_tier = 1
-                            if side == "long":
-                                math_sl = round(round(entry_price * (1 + cfg["tier1_sl_pct"] / 100) / tick) * tick, digits)
-                            else:
-                                math_sl = round(round(entry_price * (1 - cfg["tier1_sl_pct"] / 100) / tick) * tick, digits)
-                            math_wants_update = True
-                            # SECURE BAG MOVED: Only trigger on predicted reversal danger
+                            # TIER 1: Breakeven lock + Secure Bag 50% Extraction
+                            elif move_pct >= cfg["tier1_trigger_pct"] and state["current_tier"] < 1:
+                                math_tier = 1
+                                if side == "long":
+                                    math_sl = round(round(entry_price * (1 + cfg["tier1_sl_pct"] / 100) / tick) * tick, digits)
+                                else:
+                                    math_sl = round(round(entry_price * (1 - cfg["tier1_sl_pct"] / 100) / tick) * tick, digits)
+                                math_wants_update = True
                         
-                        # â”€â”€ CANDIDATE B: AI Predictive Trap SL â”€â”€
+                        # ── CANDIDATE B: AI Predictive Trap ──
                         trap_sl = None
                         trap_triggered = False
                         trap = get_ai_trap_for_position(trail_key, state)
@@ -3683,6 +3724,17 @@ async def get_bot_performance_trades(account: str = None):
     except Exception as e:
         print(f"[BOT-PERF] Trades error: {e}")
         return {"success": False, "error": str(e), "trades": []}
+
+@app.get("/api/candles")
+async def get_candles(symbol: str = "XAUUSD.x", timeframe: str = "5m", count: int = 500):
+    """Get historical OHLCV candles from MT5."""
+    try:
+        from core.mt5_engine import get_historical_candles
+        candles = await get_historical_candles(symbol, timeframe, count)
+        return {"success": True, "data": candles}
+    except Exception as e:
+        print(f"[CANDLES] Error fetching candles: {e}")
+        return {"success": False, "error": str(e), "data": []}
 
 @app.get("/api/bot-performance/chart")
 async def get_bot_performance_chart(account: str = None):

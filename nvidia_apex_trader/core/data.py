@@ -255,6 +255,156 @@ def calculate_atr(highs, lows, closes, period=14):
     return sum(true_ranges[-period:]) / period
 
 
+def compute_ema_value(closes: list, period: int) -> float:
+    """Compute a single EMA value (the latest) for any period."""
+    if not closes or len(closes) < period:
+        return closes[-1] if closes else 0.0
+    ema_series = _compute_ema(closes, period)
+    return ema_series[-1] if ema_series else 0.0
+
+
+def compute_keltner_channels(closes: list, highs: list, lows: list, opens: list = None,
+                              ema_period: int = 20, atr_period: int = 14,
+                              multiplier: float = 2.0) -> dict:
+    """Compute Keltner Channels: EMA(20) ± multiplier × ATR(14).
+    Returns upper/lower bands and breakout flags (2 consecutive closes outside)."""
+    result = {
+        "upper": 0.0, "middle": 0.0, "lower": 0.0,
+        "breakout_up": False, "breakout_down": False
+    }
+    if len(closes) < max(ema_period, atr_period + 1, 3):
+        return result
+
+    middle = compute_ema_value(closes, ema_period)
+    atr = calculate_atr(highs, lows, closes, atr_period)
+
+    upper = middle + (multiplier * atr)
+    lower = middle - (multiplier * atr)
+
+    result["upper"] = round(upper, 5)
+    result["middle"] = round(middle, 5)
+    result["lower"] = round(lower, 5)
+
+    # Breakout detection: 2 consecutive closes outside the channel WITH strict body direction
+    if len(closes) >= 2 and opens and len(opens) >= 2:
+        c1_bull = closes[-1] > opens[-1]
+        c2_bull = closes[-2] > opens[-2]
+        c1_bear = closes[-1] < opens[-1]
+        c2_bear = closes[-2] < opens[-2]
+        
+        result["breakout_up"] = (closes[-1] > upper and closes[-2] > upper) and c1_bull and c2_bull
+        result["breakout_down"] = (closes[-1] < lower and closes[-2] < lower) and c1_bear and c2_bear
+    elif len(closes) >= 2:
+        # Fallback if opens not provided
+        result["breakout_up"] = closes[-1] > upper and closes[-2] > upper
+        result["breakout_down"] = closes[-1] < lower and closes[-2] < lower
+
+    return result
+
+
+def compute_scalper_indicators(symbol: str) -> dict:
+    """Master indicator function for the Elite M1 Scalper.
+    Fetches 200 M1 candles from MT5 and computes ALL indicators in one shot.
+    Pure math — zero API cost. Returns a clean dict for the decision engine."""
+    default = {
+        "ema200": 0, "ema50": 0, "ema9": 0, "ema21": 0,
+        "ema9_above_21": False, "price_above_200": False,
+        "price_near_50": False, "pullback_to_50": False,
+        "keltner_upper": 0, "keltner_lower": 0, "keltner_middle": 0,
+        "keltner_breakout_up": False, "keltner_breakout_down": False,
+        "rsi7": 50.0, "atr14": 0.0,
+        "current_price": 0, "last_candle_bullish": False,
+        "last_candle_bearish": False, "valid": False
+    }
+    try:
+        candles = fetch_candles_sync(symbol, "1m", 250)
+        if not candles or len(candles) < 50:
+            return default
+
+        closes = [float(c["close"]) for c in candles]
+        opens = [float(c["open"]) for c in candles]
+        highs = [float(c["high"]) for c in candles]
+        lows = [float(c["low"]) for c in candles]
+        current_price = closes[-1]
+
+        # EMA Hierarchy
+        ema200 = compute_ema_value(closes, 200) if len(closes) >= 200 else compute_ema_value(closes, len(closes))
+        ema50 = compute_ema_value(closes, 50)
+        ema9 = compute_ema_value(closes, 9)
+        ema21 = compute_ema_value(closes, 21)
+
+        # Structural Pullback: price within 0.05% of EMA50 and bouncing
+        dist_to_50 = abs(current_price - ema50) / current_price * 100
+        price_near_50 = dist_to_50 < 0.05
+
+        # Pullback detection: price touched EMA50 zone in last 3 candles and bounced
+        pullback_to_50 = False
+        for i in range(-3, 0):
+            if len(closes) > abs(i):
+                candle_low = lows[i]
+                candle_high = highs[i]
+                if candle_low <= ema50 <= candle_high:
+                    pullback_to_50 = True
+                    break
+
+        # Keltner Channels
+        keltner = compute_keltner_channels(closes, highs, lows, opens)
+
+        # Pullback detection: Sniper Entry
+        # "Wait for a micro-pullback where the price retests the upper Keltner Channel boundary or the fast EMA"
+        pullback_to_50 = False # Legacy name, keeping for compatibility
+        pullback_to_fast = False
+        for i in range(-3, 0):
+            if len(closes) > abs(i):
+                candle_low = lows[i]
+                candle_high = highs[i]
+                # Check touch of EMA9, Keltner Upper, or Keltner Lower
+                if candle_low <= ema9 <= candle_high:
+                    pullback_to_fast = True
+                if candle_low <= keltner["upper"] <= candle_high:
+                    pullback_to_fast = True
+                if candle_low <= keltner["lower"] <= candle_high:
+                    pullback_to_fast = True
+                if candle_low <= ema50 <= candle_high:
+                    pullback_to_50 = True
+
+        # RSI(7) for momentum persistence
+        rsi7 = compute_rsi(closes, period=7)
+
+        # ATR(14)
+        atr14 = calculate_atr(highs, lows, closes, 14)
+
+        # Last candle direction (strict body)
+        last_candle_bullish = closes[-1] > opens[-1] if len(closes) >= 1 else False
+        last_candle_bearish = closes[-1] < opens[-1] if len(closes) >= 1 else False
+
+        return {
+            "ema200": round(ema200, 5),
+            "ema50": round(ema50, 5),
+            "ema9": round(ema9, 5),
+            "ema21": round(ema21, 5),
+            "ema9_above_21": ema9 > ema21,
+            "price_above_200": current_price > ema200,
+            "price_near_50": price_near_50,
+            "pullback_to_50": pullback_to_50,
+            "pullback_to_fast": pullback_to_fast,
+            "keltner_upper": keltner["upper"],
+            "keltner_lower": keltner["lower"],
+            "keltner_middle": keltner["middle"],
+            "keltner_breakout_up": keltner["breakout_up"],
+            "keltner_breakout_down": keltner["breakout_down"],
+            "rsi7": rsi7,
+            "atr14": round(atr14, 5),
+            "current_price": current_price,
+            "last_candle_bullish": last_candle_bullish,
+            "last_candle_bearish": last_candle_bearish,
+            "valid": True
+        }
+    except Exception as e:
+        print(f"[ELITE-SCALPER] Indicator computation error: {e}")
+        return default
+
+
 def format_for_llm(market_data):
     """Format market data for LLM consumption with full technical analysis.
     Includes EMA 9/21 cross, momentum %, trend strength, candle direction,
