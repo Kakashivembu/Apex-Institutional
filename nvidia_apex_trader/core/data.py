@@ -166,6 +166,82 @@ def compute_trend_indicators(closes: list) -> dict:
         "trend_score": score
     }
 
+
+def compute_rsi(closes: list, period: int = 3) -> float:
+    """Compute RSI (Relative Strength Index) for scalping micro-reversals.
+    
+    RSI(3) is ultra-fast and catches the exact moment a micro-pullback
+    exhausts. Values > 75 = overbought (ideal SHORT entry at local peak).
+    Values < 25 = oversold (ideal LONG entry at local trough).
+    
+    Args:
+        closes: List of close prices (needs at least period+1 values)
+        period: RSI lookback period (default 3 for scalping)
+    
+    Returns:
+        RSI value 0-100, or 50.0 if insufficient data.
+    """
+    if len(closes) < period + 1:
+        return 50.0  # Neutral if insufficient data
+    
+    # Calculate price changes
+    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
+    
+    # Separate gains and losses
+    gains = [max(d, 0) for d in deltas]
+    losses = [abs(min(d, 0)) for d in deltas]
+    
+    # Initial average using SMA
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    # Smooth with exponential moving average (Wilder's method)
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+    
+    if avg_loss == 0:
+        return 100.0  # Pure uptrend
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return round(rsi, 2)
+
+
+def compute_stoch_rsi(closes: list, rsi_period: int = 3, stoch_period: int = 3) -> float:
+    """Compute Stochastic RSI for extreme overbought/oversold detection.
+    
+    Stoch RSI normalizes RSI into a 0-100 range based on its own
+    recent high/low, making it even more sensitive to micro-reversals.
+    Values > 80 = extreme overbought. Values < 20 = extreme oversold.
+    
+    Returns:
+        Stochastic RSI value 0-100, or 50.0 if insufficient data.
+    """
+    if len(closes) < rsi_period + stoch_period + 1:
+        return 50.0
+    
+    # Compute RSI series
+    rsi_values = []
+    for i in range(rsi_period + 1, len(closes) + 1):
+        rsi_val = compute_rsi(closes[:i], rsi_period)
+        rsi_values.append(rsi_val)
+    
+    if len(rsi_values) < stoch_period:
+        return 50.0
+    
+    # Stochastic of last stoch_period RSI values
+    recent_rsi = rsi_values[-stoch_period:]
+    rsi_high = max(recent_rsi)
+    rsi_low = min(recent_rsi)
+    
+    if rsi_high == rsi_low:
+        return 50.0
+    
+    current_rsi = rsi_values[-1]
+    stoch = ((current_rsi - rsi_low) / (rsi_high - rsi_low)) * 100
+    return round(stoch, 2)
+
 def calculate_atr(highs, lows, closes, period=14):
     if len(closes) < period + 1:
         return 0

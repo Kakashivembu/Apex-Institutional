@@ -1484,8 +1484,23 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                                         print(f"[TRADE:{t_account}] ABORT: Reversal zone is too far away. No confirming CHoCH for mitigation trade.")
                                         return
                             else:
-                                limit_price = mark_price
-                                print(f"[LIMIT-DEBUG] SCALPER MODE: No OB/FVG found. Forcing LIMIT order at current price {limit_price} to prevent slippage.")
+                                # ── SNIPER PULLBACK LIMIT: Use ATR offset to catch micro-pullback ──
+                                _smc_atr = last_smc_data.get(symbol, {}).get("atr", 0)
+                                if _smc_atr > 0:
+                                    # Offset by 0.5× ATR(14) in the counter-direction
+                                    atr_offset = _smc_atr * 0.5
+                                    if action == "SHORT":
+                                        # SHORT: Place limit ABOVE current price to catch the bounce
+                                        limit_price = round((mark_price + atr_offset) / tick) * tick
+                                        print(f"[SNIPER-LIMIT] SHORT offset: +{atr_offset:.2f} (0.5×ATR={_smc_atr:.2f}) → Limit at {limit_price} (above mark {mark_price})")
+                                    else:
+                                        # LONG: Place limit BELOW current price to catch the dip
+                                        limit_price = round((mark_price - atr_offset) / tick) * tick
+                                        print(f"[SNIPER-LIMIT] LONG offset: -{atr_offset:.2f} (0.5×ATR={_smc_atr:.2f}) → Limit at {limit_price} (below mark {mark_price})")
+                                else:
+                                    # Fallback: no ATR data, use market price
+                                    limit_price = mark_price
+                                    print(f"[LIMIT-DEBUG] SCALPER MODE: No ATR data. Forcing LIMIT order at current price {limit_price}")
                             
                         is_limit = limit_price > 0 and ((action == "LONG" and limit_price <= mark_price) or (action == "SHORT" and limit_price >= mark_price))
 

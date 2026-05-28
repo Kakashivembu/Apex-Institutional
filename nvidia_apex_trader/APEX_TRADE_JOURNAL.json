@@ -1,17 +1,5 @@
 [
   {
-    "timestamp": "2026-05-25T18:56:03.563699",
-    "symbol": "USDCAD.x",
-    "direction": "SHORT",
-    "entry": 1.38065,
-    "exit": 1.3814,
-    "pnl": -0.0,
-    "exit_reason": "manual",
-    "tier_reached": 0,
-    "confidence": 55,
-    "failure_class": "PROFITABLE"
-  },
-  {
     "timestamp": "2026-05-25T18:56:03.622625",
     "symbol": "GBPJPY.x",
     "direction": "SHORT",
@@ -2397,6 +2385,18 @@
     "exit_reason": "tp",
     "tier_reached": 0,
     "confidence": 0,
+    "failure_class": "WEAK_SIGNAL"
+  },
+  {
+    "timestamp": "2026-05-28T10:06:13.369347",
+    "symbol": "XAUUSD.x",
+    "direction": "SHORT",
+    "entry": 4373.16,
+    "exit": 4376.91,
+    "pnl": -0.07,
+    "exit_reason": "tp",
+    "tier_reached": 0,
+    "confidence": 50,
     "failure_class": "WEAK_SIGNAL"
   }
 ]

@@ -1,6 +1,5 @@
 APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 
-- [05/26 19:30] **UNKNOWN** GBPJPY.x SHORT lost $0.22 (exit: tp)
 - [05/26 20:32] **BAD_TIMING** XAUUSD.x LONG lost $5.85 (exit: sl) → Wait for deeper pullback before entry
 - [05/26 21:47] **BAD_TIMING** XAUUSD.x LONG lost $7.14 (exit: sl) → Wait for deeper pullback before entry
 - [05/26 23:53] **WEAK_SIGNAL** XAUUSD.x LONG lost $7.21 (exit: sl) → Only enter when AI confidence ≥ 70%
@@ -25,3 +24,4 @@ APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 - [05/27 21:13] **UNKNOWN** XAUUSD.x SHORT lost $13.74 (exit: tp)
 - [05/27 22:13] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.04 (exit: sl) → Only enter when AI confidence ≥ 70%
 - [05/27 22:13] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.04 (exit: tp) → Only enter when AI confidence ≥ 70%
+- [05/28 10:06] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.07 (exit: tp) → Only enter when AI confidence ≥ 70%
