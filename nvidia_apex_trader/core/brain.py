@@ -340,7 +340,7 @@ def compute_trend_bias(market_data_text: str) -> dict:
     This runs BEFORE any LLM calls and is injected into all agent prompts."""
     import re
     scores = []
-    weights = {"1m": 0.5, "5m": 1.0, "15m": 1.5, "1h": 2.5, "4h": 3.5}  # Higher TF = more weight
+    weights = {"1m": 1.5, "5m": 1.0, "15m": 0.5, "1h": 0.0, "4h": 0.0}  # Scalping focus: ignore HTF
     
     # Extract trend scores from the enhanced candle format
     for match in re.finditer(r'\[(\d+[mh])\].*?Trend Score:\s*([+-]?\d+)/100', market_data_text):
@@ -1131,13 +1131,16 @@ Task: Perform deep Fundamental & Smart Money Concepts (SMC) analysis. You MUST p
 - If Phase 1 (ACCUMULATION): Output HOLD. Institutions are mapping liquidity.
 - If Phase 2 (MANIPULATION): A sweep is occurring. If sweeping Asian Lows, anticipate BULLISH reversal. If sweeping Asian Highs, anticipate BEARISH reversal. Only signal when the Footprint POC bias and OFI confirm the reversal direction.
 - If Phase 3 (DISTRIBUTION): The reversal should be underway. Confirm with market structure BOS/CHoCH.
+- CRITICAL NEWS AWARENESS: Read the FUNDAMENTAL NEWS section. If High Impact news is happening very soon or just happened, expect extreme volatility and manipulation sweeps. Adjust risk appropriately.
 Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "leverage": <1-20>, "stop_loss_pct": <float>, "take_profit_pct": <float>, "reasoning": "..."}}"""
 
     # 2. MACRO Prompt (News & Sentiment - Simple -> LM Studio)
     macro_prompt = f"""You are Antigravity MACRO, the News & Sentiment Agent.
 Asset: {symbol}
 Context: {market_data_text}
-Task: Analyze multi-timeframe trends and forex news sentiment. Pay close attention to the AMD Phase in the context. During Phase 1 (Accumulation/Asian session), always vote HOLD. During Phase 2 (Manipulation), watch for reversal signals. During Phase 3 (Distribution), confirm the trend continuation.
+Task: Analyze multi-timeframe trends and forex news sentiment. 
+1. Check the FUNDAMENTAL NEWS section. If High Impact news is happening very soon, vote HOLD to protect capital from slippage. If news just dropped, analyze if it caused a manipulation sweep or a trend continuation.
+2. Pay close attention to the AMD Phase in the context. During Phase 1 (Accumulation/Asian session), always vote HOLD. During Phase 2 (Manipulation), watch for reversal signals. During Phase 3 (Distribution), confirm the trend continuation.
 Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, "reasoning": "..."}}"""
 
     # 3. SCALPER Prompt (Orderbook/DOM - Fast -> LM Studio)

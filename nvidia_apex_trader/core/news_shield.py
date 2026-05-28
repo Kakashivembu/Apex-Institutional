@@ -345,6 +345,50 @@ async def check_news_killswitch(active_symbol: str) -> Dict:
         return default_safe
 
 
+async def get_daily_news_summary(active_symbol: str) -> str:
+    """
+    Format today's news events for the given symbol into a readable string for the LLM.
+    """
+    try:
+        calendar = await fetch_economic_calendar()
+        if not calendar:
+            return "No economic calendar data available."
+            
+        currencies = extract_currencies_from_symbol(active_symbol)
+        now = datetime.now().astimezone()
+        
+        # We only care about events happening TODAY
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+        
+        relevant_events = []
+        for event in calendar:
+            event_time = event["date"]
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=now.tzinfo)
+                
+            if today_start <= event_time <= today_end:
+                event_currency = country_to_currency(event["country"])
+                if event_currency in currencies and event["impact"] in ("High", "Medium"):
+                    time_to_event = event_time - now
+                    minutes_to_event = time_to_event.total_seconds() / 60
+                    
+                    if minutes_to_event > 0:
+                        time_str = f"in {minutes_to_event / 60:.1f} hours"
+                    else:
+                        time_str = f"{-minutes_to_event / 60:.1f} hours ago"
+                        
+                    relevant_events.append(f"- [{event['impact']} Impact] {event['title']} ({event_currency}) @ {event_time.strftime('%H:%M')} ({time_str})")
+        
+        if relevant_events:
+            return "Today's Economic News for " + active_symbol + ":\n" + "\n".join(relevant_events)
+        else:
+            return "No high/medium impact economic news for " + active_symbol + " today."
+            
+    except Exception as e:
+        print(f"[NEWS-SHIELD] Error generating news summary: {e}")
+        return "News data unavailable due to error."
+
 # Standalone test
 if __name__ == "__main__":
     async def test():

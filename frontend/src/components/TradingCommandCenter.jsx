@@ -643,6 +643,12 @@ const TradingCommandCenter = ({ marketData, wsConnected, refreshData, inrRate = 
                       <span className="text-xs text-indigo-400 font-bold uppercase tracking-widest">Global Macro Engine</span>
                     </div>
                   )}
+                  <div className="flex items-center space-x-2 mt-2 bg-black/40 px-2.5 py-1 rounded-lg border border-white/5">
+                    <div className={`w-1.5 h-1.5 rounded-full animate-pulse ${localMarketData.gate8_status?.includes('Green') ? 'bg-emerald-400' : 'bg-pink-500'}`} />
+                    <span className="text-[9px] text-slate-300 font-mono tracking-widest uppercase">
+                      GATE-8: {localMarketData.gate8_status || 'Awaiting signal...'}
+                    </span>
+                  </div>
                 </div>
               </div>
               <button 

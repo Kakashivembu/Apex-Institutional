@@ -1,14 +1,5 @@
 APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 
-- [05/26 19:30] **UNKNOWN** GBPJPY.x SHORT lost $0.22 (exit: tp)
-- [05/26 20:32] **BAD_TIMING** XAUUSD.x LONG lost $5.85 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 21:47] **BAD_TIMING** XAUUSD.x LONG lost $7.14 (exit: sl) → Wait for deeper pullback before entry
-- [05/26 23:53] **WEAK_SIGNAL** XAUUSD.x LONG lost $7.21 (exit: sl) → Only enter when AI confidence ≥ 70%
-- [05/26 23:53] **WEAK_SIGNAL** USDCAD.x SHORT lost $0.01 (exit: tp) → Only enter when AI confidence ≥ 70%
-- [05/27 08:10] **SPREAD_KILL** USDJPY.x SHORT lost $68.59 (exit: tp) → Avoid entries during low-liquidity periods
-- [05/27 08:10] **WEAK_SIGNAL** GBPJPY.x SHORT lost $752.40 (exit: sl) → Only enter when AI confidence ≥ 70%
-- [05/27 12:05] **WEAK_SIGNAL** XAUUSD.x LONG lost $42.74 (exit: sl) → Only enter when AI confidence ≥ 70%
-- [05/27 12:13] **WEAK_SIGNAL** XAUUSD.x LONG lost $43.58 (exit: sl) → Only enter when AI confidence ≥ 70%
 - [05/27 13:33] **WEAK_SIGNAL** XAUUSD.x LONG lost $43.01 (exit: sl) → Only enter when AI confidence ≥ 70%
 - [05/27 14:10] **UNKNOWN** XAUUSD.x SHORT lost $13.71 (exit: tp)
 - [05/27 14:12] **WEAK_SIGNAL** XAUUSD.x SHORT lost $13.35 (exit: tp) → Only enter when AI confidence ≥ 70%
@@ -25,3 +16,12 @@ APEX MACRO FUNDAMENTAL MEMORY FLUSHED. NEW EPOCH STARTED.
 - [05/27 21:13] **UNKNOWN** XAUUSD.x SHORT lost $13.74 (exit: tp)
 - [05/27 22:13] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.04 (exit: sl) → Only enter when AI confidence ≥ 70%
 - [05/27 22:13] **WEAK_SIGNAL** XAUUSD.x SHORT lost $0.04 (exit: tp) → Only enter when AI confidence ≥ 70%
+- [05/28 19:48] **BAD_TIMING** XAUUSD.x LONG lost $0.06 (exit: sl) → Wait for deeper pullback before entry
+- [05/28 19:51] **BAD_TIMING** XAUUSD.x SHORT lost $0.15 (exit: sl) → Wait for deeper pullback before entry
+- [05/28 19:56] **UNKNOWN** XAUUSD.x LONG lost $0.06 (exit: tp)
+- [05/28 20:08] **WEAK_SIGNAL** XAUUSD.x LONG lost $0.11 (exit: tp) → Only enter when AI confidence ≥ 70%
+- [05/28 20:14] **UNKNOWN** XAUUSD.x LONG lost $0.11 (exit: tp)
+- [05/28 20:50] **WEAK_SIGNAL** XAUUSD.x LONG lost $0.07 (exit: tp) → Only enter when AI confidence ≥ 70%
+- [05/28 20:57] **BAD_TIMING** XAUUSD.x SHORT lost $0.04 (exit: sl) → Wait for deeper pullback before entry
+- [05/28 21:02] **UNKNOWN** XAUUSD.x LONG lost $0.04 (exit: tp)
+- [05/28 21:19] **UNKNOWN** XAUUSD.x LONG lost $0.03 (exit: tp)

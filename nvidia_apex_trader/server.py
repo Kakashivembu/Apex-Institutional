@@ -710,7 +710,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         }
 
     # Continuous stacking mode: market data and AI evaluation continue even with open positions.
-    global live_market_price, macro_matrix_state
+    global live_market_price, macro_matrix_state, gate8_live_status
     
     # Update macro matrix on every pass for dashboard
     try:
@@ -879,6 +879,20 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         ofi_value = await asyncio.to_thread(calculate_order_flow_imbalance, symbol)
         ofi_label = "Aggressive Buying" if ofi_value > 0 else ("Toxic Distribution" if ofi_value < 0 else "Neutral")
         print(f"[OFI] {symbol}: OFI={ofi_value:+.0f} ({ofi_label})")
+        
+        # ── GATE 8 LIVE DASHBOARD UPDATE ──
+        try:
+            import MetaTrader5 as mt5
+            rates = await asyncio.to_thread(mt5.copy_rates_from_pos, symbol, mt5.TIMEFRAME_M1, 0, 1)
+            if rates is not None and len(rates) > 0:
+                m1_open = rates[0]['open']
+                m1_close = rates[0]['close']
+                c_color = "Green" if m1_close >= m1_open else "Red"
+                o_str = "Buyer Strength" if ofi_value > 0 else ("Seller Strength" if ofi_value < 0 else "Neutral")
+                gate8_live_status = f"{c_color} Candle + {o_str} ({ofi_value:+.0f})"
+        except Exception:
+            pass
+            
     except Exception as ofi_err:
         print(f"[OFI] Sensor error (non-blocking): {ofi_err}")
 
@@ -895,7 +909,14 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
 
     vpin_section = f"VPIN: {vpin_data['vpin']:.3f} | Toxic: {vpin_data['is_toxic']} | Dominant: {vpin_data['dominant_side']}"
 
-    market_data_text = f"Current equity: ${last_equity['total']}, Positions: {len(last_positions)} | {market_data_text_template}\n\n=== CANDLE TREND DATA ===\n{candle_data}\n\n{smc_section}\n\n=== TICK FOOTPRINT (ORDER FLOW) ===\n{footprint_str}\n\n=== LEVEL 2 ORDER BOOK INTELLIGENCE ===\n{dom_data}\n\n=== ORDER FLOW IMBALANCE (OFI) ===\nOFI: {ofi_value:+.0f}\n\n=== VPIN (Informed Trading Probability) ===\n{vpin_section}"
+    # ── FUNDAMENTAL NEWS DATA ──
+    try:
+        from core.news_shield import get_daily_news_summary
+        news_summary_text = await get_daily_news_summary(symbol)
+    except Exception as e:
+        news_summary_text = "News data unavailable."
+
+    market_data_text = f"Current equity: ${last_equity['total']}, Positions: {len(last_positions)} | {market_data_text_template}\n\n=== CANDLE TREND DATA ===\n{candle_data}\n\n{smc_section}\n\n=== TICK FOOTPRINT (ORDER FLOW) ===\n{footprint_str}\n\n=== LEVEL 2 ORDER BOOK INTELLIGENCE ===\n{dom_data}\n\n=== ORDER FLOW IMBALANCE (OFI) ===\nOFI: {ofi_value:+.0f}\n\n=== VPIN (Informed Trading Probability) ===\n{vpin_section}\n\n=== FUNDAMENTAL NEWS ({symbol}) ===\n{news_summary_text}"
 
 
     try:
@@ -978,11 +999,11 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             print(f"[RISK-MANAGER] Dynamic Risk Clamping Active ({current_trading_mode.upper()}): {_asset_class} | "
                   f"UI SL: {ui_sl}% -> Clamped: {clamped_sl}% (limit: {asset_limits['max_sl']}%) | TP: {clamped_tp}%")
                   
-            # --- PHASE 3 RISK REDUCTION ---
-            amd_phase = last_smc_data.get(symbol, {}).get("amd", {}).get("phase", "UNKNOWN")
-            if amd_phase == "DISTRIBUTION":
-                clamped_sl = round(clamped_sl * 0.5, 3)
-                print(f"[RISK-MANAGER] PHASE 3 (DISTRIBUTION) DETECTED: Slicing Stop Loss in half to {clamped_sl}% to protect account during high NY volatility.")
+            # --- PHASE 3 RISK REDUCTION (DISABLED BY USER) ---
+            # amd_phase = last_smc_data.get(symbol, {}).get("amd", {}).get("phase", "UNKNOWN")
+            # if amd_phase == "DISTRIBUTION":
+            #     clamped_sl = round(clamped_sl * 0.5, 3)
+            #     print(f"[RISK-MANAGER] PHASE 3 (DISTRIBUTION) DETECTED: Slicing Stop Loss in half to {clamped_sl}% to protect account during high NY volatility.")
 
         last_consensus = {
             "direction": action,
@@ -1026,14 +1047,16 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
         else:
             from core.brain import GLOBAL_COOLDOWNS
             import time
-            if symbol in GLOBAL_COOLDOWNS and time.time() < GLOBAL_COOLDOWNS[symbol]:
-                remaining = int(GLOBAL_COOLDOWNS[symbol] - time.time())
-                _ps_last_dir = last_stack_direction.get(symbol, "")
-                if _ps_last_dir == "" or action == _ps_last_dir:
-                    print(f"[GATE-0] COOLDOWN ACTIVE: {symbol} is in cooldown for {remaining} more seconds (Dir: {_ps_last_dir}). Skipping entry.")
+            if symbol in GLOBAL_COOLDOWNS:
+                if time.time() < GLOBAL_COOLDOWNS[symbol]:
+                    remaining = int(GLOBAL_COOLDOWNS[symbol] - time.time())
+                    print(f"[GATE-0] COOLDOWN ACTIVE: {symbol} is strictly in cooldown for {remaining} more seconds. Skipping entry.")
+                    entry_blocked = True
+                elif time.time() < GLOBAL_COOLDOWNS[symbol] + 60:
+                    remaining = int((GLOBAL_COOLDOWNS[symbol] + 60) - time.time())
+                    print(f"[GATE-0] COOLDOWN CLEARING: Waiting {remaining}s for a fresh 1m candle to form before trusting signals.")
                     entry_blocked = True
                 else:
-                    print(f"[GATE-0] COOLDOWN BYPASSED: {symbol} reversed direction ({_ps_last_dir} -> {action}).")
                     del GLOBAL_COOLDOWNS[symbol]
 
         # --- GATE 1: Consensus Threshold ---
@@ -1088,6 +1111,7 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             except (TypeError, ValueError):
                 return 0
 
+        score_1m = _tf_score("1m")
         score_5m = _tf_score("5m")
         score_15m = _tf_score("15m")
         score_1h = _tf_score("1h")
@@ -1120,12 +1144,25 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
             htf_allows = (action == "LONG" and h1_bias == "BUY") or (action == "SHORT" and h1_bias == "SELL")
             
             if SCALPER_MODE:
-                # Scalper Mode MUST align with overall Weighted Trend Bias to prevent chasing dead bounces
-                if (action == "LONG" and trend_score >= -10) or (action == "SHORT" and trend_score <= 10):
+                # Scalper Mode MUST align with overall Weighted Trend Bias... 
+                # UNLESS there is strong micro-momentum allowing for a Zig-Zag counter-trend scalp.
+                trend_allows = (action == "LONG" and trend_score >= -10) or (action == "SHORT" and trend_score <= 10)
+                
+                # Zig-Zag Override (Micro-Momentum)
+                micro_momentum_allows = False
+                if action == "LONG" and score_1m >= 15 and score_5m >= 5:
+                    micro_momentum_allows = True
+                elif action == "SHORT" and score_1m <= -15 and score_5m <= -5:
+                    micro_momentum_allows = True
+
+                if trend_allows:
                     print(f"[GATE-3] SCALPER MODE ACTIVE: Trend bias is {trend_score}. Allowing {action} scalp.")
                     htf_allows = True
+                elif micro_momentum_allows:
+                    print(f"[GATE-3] SCALPER ZIG-ZAG ACTIVE: Counter-trend {action} allowed! 1m:{score_1m:+} | 5m:{score_5m:+}")
+                    htf_allows = True
                 else:
-                    print(f"[GATE-3] SCALPER MODE BLOCKED: Counter-trend {action} rejected. Trend Bias is {trend_score}.")
+                    print(f"[GATE-3] SCALPER MODE BLOCKED: Counter-trend {action} rejected. Trend Bias is {trend_score}. Micro-momentum weak (1m:{score_1m:+}).")
                     htf_allows = False
             elif not htf_allows and is_momentum_breakout:
                 print(f"[GATE-3] BYPASS: Session Open Momentum Breakout detected (Vel: {velocity_ratio:.2f}x, 5m: {score_5m:+d}). Overriding H1 bias={h1_bias}.")
@@ -1241,6 +1278,37 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                         entry_blocked = True
                     else:
                         print(f"[GATE-7] Anti-chase OK: {symbol} move {move_distance:.5f} < threshold {chase_threshold:.5f}")
+
+        # --- GATE 8: Candle Color & OFI Strength Confirmation ---
+        if not entry_blocked:
+            try:
+                import MetaTrader5 as mt5
+                rates = await asyncio.to_thread(mt5.copy_rates_from_pos, symbol, mt5.TIMEFRAME_M1, 0, 1)
+                if rates is not None and len(rates) > 0:
+                    m1_open = rates[0]['open']
+                    m1_close = rates[0]['close']
+                    
+                    if action == "LONG":
+                        if m1_close < m1_open:
+                            print(f"[GATE-8] BLOCKED: Cannot enter LONG on a Red 1m candle (Open: {m1_open}, Close: {m1_close}).")
+                            entry_blocked = True
+                        elif ofi_value < 15:
+                            print(f"[GATE-8] BLOCKED: OFI ({ofi_value:+.0f}) is too weak. Need >= +15 Buyer Strength. Rejecting LONG.")
+                            entry_blocked = True
+                        else:
+                            print(f"[GATE-8] CONFIRMED: Green Candle + Buyer Strength ({ofi_value:+.0f}).")
+                    
+                    elif action == "SHORT":
+                        if m1_close > m1_open:
+                            print(f"[GATE-8] BLOCKED: Cannot enter SHORT on a Green 1m candle (Open: {m1_open}, Close: {m1_close}).")
+                            entry_blocked = True
+                        elif ofi_value > -15:
+                            print(f"[GATE-8] BLOCKED: OFI ({ofi_value:+.0f}) is too weak. Need <= -15 Seller Strength. Rejecting SHORT.")
+                            entry_blocked = True
+                        else:
+                            print(f"[GATE-8] CONFIRMED: Red Candle + Seller Strength ({ofi_value:+.0f}).")
+            except Exception as e:
+                print(f"[GATE-8] Validation failed (non-blocking): {e}")
 
         # ============== ALL GATES PASSED â€” EXECUTE TRADE ==============
         if not entry_blocked:
@@ -1477,12 +1545,8 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                                         print(f"[TRADE:{t_account}] LLM REJECTED mitigation trade. ABORT: Reversal zone is too far away.")
                                         return
                                 else:
-                                    if abs(trend_score) >= 40:
-                                        print(f"[MOMENTUM OVERRIDE] Trend is extremely strong ({trend_score}). Bypassing limit distance and forcing TRUE MARKET ORDER to catch the drop!")
-                                        limit_price = 0.0  # Keep limit_price 0.0 to force Market Order
-                                    else:
-                                        print(f"[TRADE:{t_account}] ABORT: Reversal zone is too far away. No confirming CHoCH for mitigation trade.")
-                                        return
+                                    print(f"[MOMENTUM OVERRIDE] SCALPER MODE: Bypassing limit distance and forcing TRUE MARKET ORDER to catch the move!")
+                                    limit_price = 0.0  # Force Market Order
                             else:
                                 limit_price = mark_price
                                 print(f"[LIMIT-DEBUG] SCALPER MODE: No OB/FVG found. Forcing LIMIT order at current price {limit_price} to prevent slippage.")
@@ -1926,8 +1990,10 @@ async def step_trailing_loop():
                         # SCALPER MODE: AGGRESSIVE M1 REVERSAL SECURE BAG
                         # ============================================================
                         current_points = (mark_price - entry_price) if side == "long" else (entry_price - mark_price)
-                        # Require at least $0.80 (8 pips) of ACTIVE profit to ensure we clear spread/commissions
-                        if SCALPER_MODE and current_points >= 0.8:
+                        # Require at least 0.03% profit to ensure we clear spread/commissions before early bailout
+                        min_profit_points = mark_price * 0.0003
+                        
+                        if SCALPER_MODE and current_points >= min_profit_points:
                             import MetaTrader5 as _mt5_m1
                             rates = _mt5_m1.copy_rates_from_pos(symbol, _mt5_m1.TIMEFRAME_M1, 0, 1)
                             if rates is not None and len(rates) > 0:
@@ -1935,14 +2001,18 @@ async def step_trailing_loop():
                                 m1_close = rates[0]['close']
                                 reversal_detected = False
                                 
-                                # Check if candle color flipped against our position
-                                if side == "long" and mark_price < m1_open:
-                                    reversal_detected = True # Red candle forming
-                                elif side == "short" and mark_price > m1_open:
-                                    reversal_detected = True # Green candle forming
+                                # Use a proportional threshold (0.05% of price) to avoid closing on tiny wicks.
+                                # For Gold ($4500), this is a $2.25 wick. For EURUSD (1.08), it's 5.4 pips.
+                                rev_thresh = mark_price * 0.0005
+                                
+                                # Check if candle color flipped significantly against our position
+                                if side == "long" and mark_price < (m1_open - rev_thresh):
+                                    reversal_detected = True # Strong Red candle forming
+                                elif side == "short" and mark_price > (m1_open + rev_thresh):
+                                    reversal_detected = True # Strong Green candle forming
                                     
                                 if reversal_detected:
-                                    print(f"[SCALPER SECURE BAG] M1 Reversal Detected! Securing full max margin profit for {symbol} at {mark_price}")
+                                    print(f"[SCALPER SECURE BAG] M1 Reversal Detected (> {rev_thresh:.3f} pts)! Securing profit for {symbol} at {mark_price}")
                                     from core.mt5_engine import close_mt5_position
                                     await close_mt5_position(int(product_id), symbol=symbol, volume=state["size"], side=side)
                                     continue # Skip standard math trail since we are closing the trade
@@ -2161,8 +2231,12 @@ async def step_trailing_loop():
                                     print(f"  [MT5 REJECTION] SL modification failed after retry. MT5 Error Code: {error}")
                                     result = {"success": False}
                                 elif mt5_result.retcode != mt5.TRADE_RETCODE_DONE:
-                                    print(f"  [MT5 REJECTION] SL modification rejected after retry. Retcode: {mt5_result.retcode} | Comment: {mt5_result.comment}")
-                                    result = {"success": False}
+                                    if mt5_result.retcode == 10016:
+                                        print(f"  [MT5 REJECTION] Price too close to Stops Level (10016). Will retry trailing when price moves.")
+                                        result = {"success": False, "is_10016": True}
+                                    else:
+                                        print(f"  [MT5 REJECTION] SL modification rejected after retry. Retcode: {mt5_result.retcode} | Comment: {mt5_result.comment}")
+                                        result = {"success": False}
                                 else:
                                     print(f"  [TRADE:SUCCESS] SL modification ticket: {mt5_result.order}")
                                     result = {"success": True}
@@ -2180,8 +2254,11 @@ async def step_trailing_loop():
                                 # FLIGHT-RECORDER: persist tier change / SL update
                                 save_flight_state(step_trail_state, ai_predictive_traps, force=True)
                             else:
-                                print(f"  [FAIL] API failed: {result.get('error', 'Unknown')}")
-                                state["sl_order_id"] = None
+                                if result.get("is_10016"):
+                                    print(f"  [SKIPPED] Trailing SL paused temporarily due to MT5 Stops Level (10016).")
+                                else:
+                                    print(f"  [FAIL] API failed: {result.get('error', 'Unknown')}")
+                                    state["sl_order_id"] = None
                             # Mark AI trap as executed if it was used
                             if sl_source == "ai_trap" and trap:
                                 trap["executed"] = True
@@ -4213,6 +4290,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "trading_enabled": trading_enabled,
                         "dry_run": exchange.DRY_RUN,
                         "account_balances": account_balances,
+                        "gate8_status": gate8_live_status if 'gate8_live_status' in globals() else "Awaiting signal...",
                         "step_trail": build_step_trail_snapshot(),
                         "ai_traps": {k: {"trigger": v["predicted_trigger_price"], "protective_sl": v["protective_sl_price"], "reasoning": v.get("reasoning", "")[:100], "side": v.get("side", ""), "executed": v.get("executed", False), "set_at": v.get("set_at", 0)} for k, v in ai_predictive_traps.items()}
                     }
