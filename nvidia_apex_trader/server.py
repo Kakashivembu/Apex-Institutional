@@ -1070,12 +1070,14 @@ async def fetch_real_market_data(symbol: str, skip_consensus: bool = False):
                     print(f"[GATE-2] BLOCKED: {kz_name} ({_ny_now.strftime('%I:%M %p')} NY). Skipping entry.")
                     entry_blocked = True
                 
-                # 2. AMD Phase Filter (Block during Asian Accumulation)
+                # 2. Trading Geek Phase Filter (Block during Asian Build Phase)
                 if not entry_blocked:
-                    amd_dict = last_smc_data.get(symbol, {}).get("amd", {})
-                    amd_phase = amd_dict.get("phase", "UNKNOWN")
-                    if amd_phase == "ACCUMULATION":
-                        print(f"[GATE-2] BLOCKED: Asian Session Accumulation active. Bot is dormant, mapping liquidity boundaries.")
+                    geek_dict = last_smc_data.get(symbol, {}).get("amd", {})
+                    geek_phase = geek_dict.get("phase", "UNKNOWN")
+                    # Even though the dict key is still "amd" from the macro sensor, 
+                    # we treat ACCUMULATION as the "Build Liquidity" phase for Geek Strategy.
+                    if geek_phase == "ACCUMULATION":
+                        print(f"[GATE-2] BLOCKED: Asian Session Build Phase active. Bot is dormant, mapping liquidity boundaries.")
                         entry_blocked = True
         # --- MOMENTUM BREAKOUT OVERRIDE ---
         # Detect early session open breakouts to bypass slow H1 EMAs
@@ -3153,71 +3155,75 @@ async def get_market_schedule():
     
     # AMD Phase Schedule in IST
     # Broker time is typically GMT+2/+3, so Asian Range 00:00-06:00 broker ≈ 03:30-11:30 IST
-    amd_phases = [
+    # The Trading Geek Strategy Phases
+    # Asian Session (00:00-06:00 UTC / 05:30-11:30 IST) - Build Liquidity
+    # London Open (06:00-12:00 UTC / 11:30-17:30 IST) - Wait for Sweep
+    # NY Open (12:00-21:00 UTC / 17:30-02:30 IST) - Sniper Entry
+    geek_phases = [
         {
-            "id": "accumulation",
-            "label": "Phase 1 — Accumulation",
+            "id": "build",
+            "label": "Phase 1 — Build Liquidity",
             "emoji": "🟣",
-            "ist_open": "3:30 AM",
+            "ist_open": "5:30 AM",
             "ist_close": "11:30 AM",
-            "utc_open": "10:00 PM",
+            "utc_open": "12:00 AM",
             "utc_close": "6:00 AM",
             "color": "purple",
             "bot_status": "DORMANT",
-            "description": "Asian Session. Bot maps the exact High and Low liquidity boundaries. NO trades are taken. Retail traders set their stop-losses outside this range.",
-            "detail": "The bot sits idle and records the ceiling (Asian High) and floor (Asian Low) of the session. These become the trap boundaries for the Manipulation phase."
+            "description": "Asian Session. Bot records the highest and lowest price of this session to define the 'Liquidity Magnets'. No trades taken.",
+            "detail": "Retail traders put their stop losses above and below this range. The bot waits for the market makers to hunt these stops."
         },
         {
-            "id": "manipulation",
-            "label": "Phase 2 — Manipulation",
+            "id": "sweep",
+            "label": "Phase 2 — The Sweep",
             "emoji": "🔴",
             "ist_open": "11:30 AM",
-            "ist_close": "5:30 PM",
+            "ist_close": "6:00 PM",
             "utc_open": "6:00 AM",
-            "utc_close": "12:00 PM",
+            "utc_close": "12:30 PM",
             "color": "red",
             "bot_status": "ARMED",
-            "description": "London Session (Judas Swing). Institutions sweep the Asian Range to trigger retail stop-losses. Bot watches for the price to pierce and then reverse back inside the range.",
-            "detail": "The bot is armed and watching. When London pushes price below the Asian Low (or above the Asian High), retail breakout traders get trapped. The bot waits for VPIN to go non-toxic and OFI to flip as confirmation."
+            "description": "London Session. Bot waits for price to pierce outside the Asian High or Asian Low to sweep liquidity.",
+            "detail": "When price breaks out of the Asian Range, retail traders chase the breakout. The bot is armed, waiting for price to snap back inside (The Judas Swing)."
         },
         {
-            "id": "distribution",
-            "label": "Phase 3 — Distribution",
+            "id": "entry",
+            "label": "Phase 3 — Sniper Entry",
             "emoji": "🟢",
-            "ist_open": "5:30 PM",
+            "ist_open": "6:00 PM",
             "ist_close": "2:30 AM",
-            "utc_open": "12:00 PM",
+            "utc_open": "12:30 PM",
             "utc_close": "9:00 PM",
             "color": "green",
             "bot_status": "FIRES",
-            "description": "New York Session (NY Reversal). The true institutional trend begins. Bot fires a single sniper entry with TP anchored to the opposite side of the Asian Range.",
-            "detail": "If London swept the Asian Low → Bot goes LONG targeting the Asian High. If London swept the Asian High → Bot goes SHORT targeting the Asian Low. One-shot, one-kill. Full position held to target."
+            "description": "New York Killzone. If the trend is aligned (>200 EMA), the bot enters exactly at the Order Block that caused the reversal.",
+            "detail": "Requires LTF CHoCH. Limit order is placed at the Order Block with SL behind the wick. Targets minimum 1:2 R:R."
         },
         {
             "id": "cooldown",
             "label": "Cooldown Window",
             "emoji": "🌙",
             "ist_open": "2:30 AM",
-            "ist_close": "3:30 AM",
+            "ist_close": "5:30 AM",
             "utc_open": "9:00 PM",
-            "utc_close": "10:00 PM",
+            "utc_close": "12:00 AM",
             "color": "slate",
             "bot_status": "SLEEPING",
-            "description": "Market gap between NY close and Asia open. All sessions are closed. The bot is fully dormant to avoid low-liquidity slippage.",
-            "detail": "No trading activity. The bot resets its daily AMD state and prepares for the next cycle."
+            "description": "Market gap between NY close and Asia open. Bot is fully dormant.",
+            "detail": "No trading activity. Resets daily liquidity levels."
         }
     ]
     
-    # Determine current AMD phase
+    # Determine current Geek phase
     current_phase = "cooldown"
-    if 3.5 <= ist_decimal < 11.5:
-        current_phase = "accumulation"
-    elif 11.5 <= ist_decimal < 17.5:
-        current_phase = "manipulation"
-    elif 17.5 <= ist_decimal < 24.0 or (0 <= ist_decimal < 2.5):
-        current_phase = "distribution"
+    if 5.5 <= ist_decimal < 11.5:
+        current_phase = "build"
+    elif 11.5 <= ist_decimal < 18.0:
+        current_phase = "sweep"
+    elif 18.0 <= ist_decimal < 24.0 or (0 <= ist_decimal < 2.5):
+        current_phase = "entry"
     
-    for p in amd_phases:
+    for p in geek_phases:
         p["is_active"] = (p["id"] == current_phase)
 
     # Also include old session data for backwards compat
@@ -3252,7 +3258,7 @@ async def get_market_schedule():
         "sessions": sessions_ist,
         "active_pairs": list(get_current_session_pairs()),
         "is_gap": len(active_sessions) == 0,
-        "amd_phases": amd_phases,
+        "geek_phases": geek_phases,
         "current_phase": current_phase
     }
 

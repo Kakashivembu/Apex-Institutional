@@ -1233,10 +1233,7 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
                     else:
                         return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: RSI oversold but no bullish confirmation candle yet (RSI={rsi_3:.1f})"}
                 
-                # RSI > 70 in bullish trend = momentum is strong, allow entry
-                if rsi_3 >= 70 and abs(trend_score) >= 30:
-                    return {"decision": "BUY", "confidence": 100, "reasoning": f"Sniper Scalper: Strong momentum LONG! RSI(3)={rsi_3:.1f}, Trend={trend_score}"}
-                    
+
                 return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Bullish but RSI neutral ({rsi_3:.1f}), waiting..."}
                 
             elif trend_score <= -10:
@@ -1260,10 +1257,7 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
                     else:
                         return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: RSI overbought but no bearish confirmation candle yet (RSI={rsi_3:.1f})"}
                 
-                # RSI < 30 in bearish trend = momentum is strong, allow entry
-                if rsi_3 <= 30 and abs(trend_score) >= 30:
-                    return {"decision": "SELL", "confidence": 100, "reasoning": f"Sniper Scalper: Strong momentum SHORT! RSI(3)={rsi_3:.1f}, Trend={trend_score}"}
-                    
+
                 return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Bearish but RSI neutral ({rsi_3:.1f}), waiting..."}
             else:
                 return {"decision": "HOLD", "confidence": 0, "reasoning": f"Sniper Scalper: Ranging Trend ({trend_score}), RSI(3)={rsi_3:.1f}"}
@@ -1278,44 +1272,64 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
         })
         if asyncio.iscoroutine(coro): asyncio.create_task(coro)
 
-    # Gather results concurrently
-    claw_res, macro_res, scalper_res = await asyncio.gather(run_claw(), run_macro(), run_scalper())
+    async def run_trading_geek():
+        """The Trading Geek execution engine."""
+        if is_scalping:
+            return {"decision": "HOLD", "confidence": 0}
+            
+        import re as _re
+        
+        # 1. Trend Alignment (> 200 EMA)
+        trend_data = compute_trend_bias(market_data_text)
+        trend_score = trend_data.get("score", 0)
+        
+        # 2. Liquidity Sweep Detection (from SMC context)
+        sweep_detected = smc_data.get("sweep_detected", False)
+        sweep_dir = smc_data.get("sweep_direction", "NONE")
+        
+        # 3. CHoCH Confirmation
+        bullish_choch = "BULLISH BOS/CHoCH" in market_data_text
+        bearish_choch = "BEARISH BOS/CHoCH" in market_data_text
+        
+        print(f"[GEEK-ENGINE] Trend={trend_score} | Sweep={sweep_detected}({sweep_dir}) | BullCHoCH={bullish_choch} | BearCHoCH={bearish_choch}")
+        
+        # Logic:
+        # If trend is Bullish (trend_score > 0), we look for LONGs.
+        # Requires: Sweep of Asian Low (sweep_dir == "BUY") + Bullish CHoCH
+        
+        if trend_score >= 10:
+            if sweep_detected and sweep_dir == "BUY":
+                if bullish_choch:
+                    return {"decision": "BUY", "confidence": 100, "reasoning": "Trading Geek: Bullish trend aligned, Asian Low swept, Bullish CHoCH confirmed. Limit placed at OB."}
+                else:
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": "Trading Geek: Sweep detected, waiting for Bullish CHoCH confirmation."}
+            return {"decision": "HOLD", "confidence": 0, "reasoning": "Trading Geek: Waiting for Liquidity Sweep (Asian Low)."}
+            
+        elif trend_score <= -10:
+            if sweep_detected and sweep_dir == "SELL":
+                if bearish_choch:
+                    return {"decision": "SELL", "confidence": 100, "reasoning": "Trading Geek: Bearish trend aligned, Asian High swept, Bearish CHoCH confirmed. Limit placed at OB."}
+                else:
+                    return {"decision": "HOLD", "confidence": 0, "reasoning": "Trading Geek: Sweep detected, waiting for Bearish CHoCH confirmation."}
+            return {"decision": "HOLD", "confidence": 0, "reasoning": "Trading Geek: Waiting for Liquidity Sweep (Asian High)."}
+            
+        return {"decision": "HOLD", "confidence": 0, "reasoning": "Trading Geek: Trend not aligned."}
 
-    # Weighted Consensus Logic
-    claw_dec = claw_res.get("decision", "HOLD").upper()
-    macro_dec = macro_res.get("decision", "HOLD").upper()
-    scalper_dec = scalper_res.get("decision", "HOLD").upper()
-
-    decisions = [claw_dec, macro_dec, scalper_dec]
-    
-    def score_decision(d):
-        if d == "BUY": return 1.0
-        if d == "SELL": return -1.0
-        return 0.0
-
-    # Weights: CLAW (50%), MACRO (25%), SCALPER (25%)
+    # Execute the requested strategy
     if is_scalping:
-        net_score = score_decision(scalper_dec) * 1.0
-        avg_conf = safe_int(scalper_res.get("confidence", 0), 0, 0, 100)
+        strategy_res = await run_scalper()
     else:
-        net_score = (score_decision(claw_dec) * 0.50) + \
-                    (score_decision(macro_dec) * 0.25) + \
-                    (score_decision(scalper_dec) * 0.25)
-        avg_conf = (
-            safe_int(claw_res.get("confidence", 0), 0, 0, 100) +
-            safe_int(macro_res.get("confidence", 0), 0, 0, 100) +
-            safe_int(scalper_res.get("confidence", 0), 0, 0, 100)
-        ) // 3
-    
-    # Thresholds: +/- 0.40 required to override HOLD
-    if net_score >= 0.40:
-        final_decision = "BUY"
-    elif net_score <= -0.40:
-        final_decision = "SELL"
-    else:
-        final_decision = "HOLD"
+        strategy_res = await run_trading_geek()
+        
+    # We no longer use CLAW or MACRO LLM calls for execution.
+    claw_res = {}
+    macro_res = {}
 
-    sl_pct, tp_pct, _ = clamp_risk_to_symbol(symbol, claw_res.get("stop_loss_pct", risk_profile["sl"]), claw_res.get("take_profit_pct", risk_profile["tp"]))
+    # The decision is purely driven by the active strategy (Scalper or Geek)
+    final_decision = strategy_res.get("decision", "HOLD").upper()
+    avg_conf = safe_int(strategy_res.get("confidence", 0), 0, 0, 100)
+    
+    sl_pct, tp_pct, _ = clamp_risk_to_symbol(symbol, risk_profile["sl"], risk_profile["tp"])
     
     # --- SWEEP SL OVERRIDE (CHALLENGE MODE 1:10 R:R) ---
     if smc_data and smc_data.get("sweep_detected"):
@@ -1330,13 +1344,11 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
             tp_pct = round(sl_pct * 10.0, 3)
             print(f"[JUDAS SWING] SL strictly pegged to wick anchor {anchor}. R:R mapped to 1:10 (TP {tp_pct}%)")
 
-    ai_leverage = safe_int(claw_res.get("leverage", 10), 10, 1, 20)
+    ai_leverage = 10
     
-    buys = decisions.count("BUY")
-    sells = decisions.count("SELL")
-    reasoning_summary = f"Consensus: {buys} BUY, {sells} SELL.\n\n[CLAW - SMC Analysis]: {decisions[0]}\n{claw_res.get('reasoning', '')}\n\n[MACRO - Trend Analysis]: {decisions[1]}\n{macro_res.get('reasoning', '')}\n\n[SCALPER - DOM Analysis]: {decisions[2]}\n{scalper_res.get('reasoning', '')}"
+    reasoning_summary = f"[{'SCALPER' if is_scalping else 'TRADING GEEK'} ENGINE]\nDecision: {final_decision}\nReasoning: {strategy_res.get('reasoning', '')}"
     
-    print(f"[SWARM] Final Consensus: {final_decision} ({avg_conf}%) | SL {sl_pct}% | TP {tp_pct}%")
+    print(f"[ENGINE] Final Decision: {final_decision} ({avg_conf}%) | SL {sl_pct}% | TP {tp_pct}%")
     
     if broadcast_callback:
         coro = broadcast_callback({
@@ -1354,7 +1366,7 @@ Output strictly JSON: {{"decision": "BUY"|"SELL"|"HOLD", "confidence": <0-100>, 
         "stop_loss": sl_pct,
         "take_profit": tp_pct,
         "volatility": "high" if avg_conf < 50 else "medium",
-        "entry_price": scalper_res.get("entry_price", live_asset_price),
+        "entry_price": strategy_res.get("entry_price", live_asset_price),
         "_debug": {
             "hermes_reasoning": reasoning_summary,
             "trend_bias": compute_trend_bias(market_data_text)

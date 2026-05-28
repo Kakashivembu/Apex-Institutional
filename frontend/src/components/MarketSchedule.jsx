@@ -3,9 +3,9 @@ import { API_BASE } from '../lib/api';
 import { Clock, Globe, ArrowRight, Shield, Crosshair, Zap, Moon } from 'lucide-react';
 
 const PHASE_CONFIG = {
-  accumulation: { icon: Shield, gradient: 'from-purple-600 to-violet-800', border: 'border-purple-500/40', glow: 'shadow-[0_0_30px_rgba(147,51,234,0.2)]', text: 'text-purple-300', badge: 'bg-purple-500/20 text-purple-300', dot: 'bg-purple-400', bar: 'from-purple-500 to-violet-600' },
-  manipulation: { icon: Crosshair, gradient: 'from-red-600 to-rose-800', border: 'border-red-500/40', glow: 'shadow-[0_0_30px_rgba(239,68,68,0.2)]', text: 'text-red-300', badge: 'bg-red-500/20 text-red-300', dot: 'bg-red-400', bar: 'from-red-500 to-rose-600' },
-  distribution: { icon: Zap, gradient: 'from-emerald-600 to-green-800', border: 'border-emerald-500/40', glow: 'shadow-[0_0_30px_rgba(16,185,129,0.2)]', text: 'text-emerald-300', badge: 'bg-emerald-500/20 text-emerald-300', dot: 'bg-emerald-400', bar: 'from-emerald-500 to-green-600' },
+  build: { icon: Shield, gradient: 'from-purple-600 to-violet-800', border: 'border-purple-500/40', glow: 'shadow-[0_0_30px_rgba(147,51,234,0.2)]', text: 'text-purple-300', badge: 'bg-purple-500/20 text-purple-300', dot: 'bg-purple-400', bar: 'from-purple-500 to-violet-600' },
+  sweep: { icon: Crosshair, gradient: 'from-red-600 to-rose-800', border: 'border-red-500/40', glow: 'shadow-[0_0_30px_rgba(239,68,68,0.2)]', text: 'text-red-300', badge: 'bg-red-500/20 text-red-300', dot: 'bg-red-400', bar: 'from-red-500 to-rose-600' },
+  entry: { icon: Zap, gradient: 'from-emerald-600 to-green-800', border: 'border-emerald-500/40', glow: 'shadow-[0_0_30px_rgba(16,185,129,0.2)]', text: 'text-emerald-300', badge: 'bg-emerald-500/20 text-emerald-300', dot: 'bg-emerald-400', bar: 'from-emerald-500 to-green-600' },
   cooldown: { icon: Moon, gradient: 'from-slate-600 to-slate-800', border: 'border-slate-500/30', glow: '', text: 'text-slate-400', badge: 'bg-slate-500/20 text-slate-400', dot: 'bg-slate-500', bar: 'from-slate-500 to-slate-600' },
 };
 
@@ -45,7 +45,7 @@ const MarketSchedule = () => {
       <div className="flex items-center justify-center h-full min-h-[400px]">
         <div className="flex flex-col items-center gap-4">
           <div className="w-8 h-8 border-4 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin" />
-          <p className="text-slate-400 text-sm font-medium animate-pulse">Loading AMD Schedule...</p>
+          <p className="text-slate-400 text-sm font-medium animate-pulse">Loading Strategy Schedule...</p>
         </div>
       </div>
     );
@@ -60,7 +60,7 @@ const MarketSchedule = () => {
     );
   }
 
-  const currentPhaseData = (scheduleData.amd_phases || []).find(p => p.is_active);
+  const currentPhaseData = (scheduleData.geek_phases || []).find(p => p.is_active);
   const phaseStyle = currentPhaseData ? PHASE_CONFIG[currentPhaseData.id] : PHASE_CONFIG.cooldown;
   const statusInfo = currentPhaseData ? BOT_STATUS_LABELS[currentPhaseData.bot_status] : BOT_STATUS_LABELS.SLEEPING;
 
@@ -72,11 +72,11 @@ const MarketSchedule = () => {
           <div className="flex-1">
             <h2 className="text-2xl font-black font-heading tracking-tight text-white mb-2 flex items-center gap-3">
               <Clock className="w-6 h-6 text-cyan-400" />
-              AMD Daily Schedule
+              The Trading Geek Strategy
               <span className="text-sm font-normal text-slate-500">(IST)</span>
             </h2>
             <p className="text-sm text-slate-400 max-w-xl">
-              Institutional time-based liquidity framework. The bot follows a strict daily cycle: map the Asian Range, wait for London to sweep it, then snipe the NY reversal.
+              Strictly follows structural sweeps. The bot waits for a liquidity sweep of the Asian Range during London/NY, waits for a LTF CHoCH + FVG, and enters at the Order Block with trend alignment.
             </p>
           </div>
           
@@ -113,9 +113,9 @@ const MarketSchedule = () => {
         )}
       </div>
 
-      {/* AMD Phase Cards Grid */}
+      {/* Geek Phase Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {(scheduleData.amd_phases || []).map(phase => {
+        {(scheduleData.geek_phases || []).map(phase => {
           const style = PHASE_CONFIG[phase.id] || PHASE_CONFIG.cooldown;
           const PhaseIcon = style.icon;
           const isActive = phase.is_active;
@@ -186,28 +186,31 @@ const MarketSchedule = () => {
           <span className="text-xl">🏆</span> XAUUSD (Gold) Master Rule
         </h3>
         <p className="text-sm text-amber-200/70">
-          Gold trading follows the AMD cycle but is strictly restricted to <strong>11:30 AM — 9:30 PM IST</strong> (London + NY overlap). 
-          During Asian accumulation, Gold is automatically excluded from the scanning fleet to avoid choppy range traps.
+          The Trading Geek strategy for Gold relies on volatility. It only fires during the <strong>London Open to NY Close</strong> window. During the slow Asian session, the bot only collects the highest and lowest price to set up the trap.
         </p>
       </div>
 
-      {/* AMD Strategy Summary */}
+      {/* Trading Geek Strategy Summary */}
       <div className="bg-gradient-to-br from-cyan-900/20 to-blue-900/10 border border-cyan-500/15 rounded-3xl p-6">
         <h3 className="text-cyan-400 font-bold mb-4 flex items-center gap-2">
-          <Crosshair className="w-5 h-5" /> How the AMD Strategy Works
+          <Crosshair className="w-5 h-5" /> Trading Geek Execution Engine
         </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="bg-black/30 rounded-xl p-4 border border-purple-500/20">
-            <p className="text-purple-400 font-bold text-sm mb-2">🟣 Step 1: Map the Box</p>
-            <p className="text-[11px] text-slate-400 leading-relaxed">During Asia, the bot records the exact High and Low. Retail traders place their stops just outside this range — creating a liquidity pool.</p>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-black/30 rounded-xl p-4 border border-blue-500/20">
+            <p className="text-blue-400 font-bold text-sm mb-2">1. 1H Trend Align</p>
+            <p className="text-[11px] text-slate-400 leading-relaxed">The bot checks the 1-Hour chart to verify if price is above or below the 200 EMA. It will never trade counter-trend.</p>
           </div>
-          <div className="bg-black/30 rounded-xl p-4 border border-red-500/20">
-            <p className="text-red-400 font-bold text-sm mb-2">🔴 Step 2: The Trap</p>
-            <p className="text-[11px] text-slate-400 leading-relaxed">London aggressively sweeps the Asian range, triggering retail stops. This is the "Judas Swing" — a deliberate institutional fakeout.</p>
+          <div className="bg-black/30 rounded-xl p-4 border border-purple-500/20">
+            <p className="text-purple-400 font-bold text-sm mb-2">2. Liquidity Sweep</p>
+            <p className="text-[11px] text-slate-400 leading-relaxed">Price must pierce beyond the Asian High or Asian Low to take out retail stop losses.</p>
+          </div>
+          <div className="bg-black/30 rounded-xl p-4 border border-amber-500/20">
+            <p className="text-amber-400 font-bold text-sm mb-2">3. LTF CHoCH</p>
+            <p className="text-[11px] text-slate-400 leading-relaxed">After the sweep, the bot drops to the 1m/5m chart and waits for a strong, energetic reversal that breaks structure (CHoCH).</p>
           </div>
           <div className="bg-black/30 rounded-xl p-4 border border-emerald-500/20">
-            <p className="text-emerald-400 font-bold text-sm mb-2">🟢 Step 3: The Kill</p>
-            <p className="text-[11px] text-slate-400 leading-relaxed">NY reverses aggressively. The bot fires ONE sniper entry. TP is pegged to the opposite side of the Asian box. One-shot, one-kill.</p>
+            <p className="text-emerald-400 font-bold text-sm mb-2">4. Limit Entry</p>
+            <p className="text-[11px] text-slate-400 leading-relaxed">The bot places a Limit Order precisely at the Order Block (the last opposite candle before the CHoCH) with SL at the wick.</p>
           </div>
         </div>
       </div>
